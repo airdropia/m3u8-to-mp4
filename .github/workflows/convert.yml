@@ -8,9 +8,9 @@ on:
         required: true
         default: 'https://video.twimg.com/amplify_video/2107018999351410688/pl/avc1/1920x1080/ckTVsct0MPiAKUNM.m3u8'
       compress:
-        description: 'Compress video (2GB+ par h265 recommended; slow but ~40-50% chhota)'
+        description: 'Compress video (h265 = ~40-50% chhota, slow; none = copy)'
         required: false
-        default: 'none'
+        default: 'h265'
         type: choice
         options:
           - none
