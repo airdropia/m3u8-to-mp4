@@ -48,23 +48,29 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: video
-          path: output.mp4
+          path: video.zip
           if-no-files-found: error
+
+      - name: Package zip
+        if: success()
+        run: |
+          python3 -m zipfile -c video.zip output.mp4
+          ls -lh video.zip
 
       - name: Create release with direct download link
         if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          SIZE=$(stat -c%s output.mp4)
+          SIZE=$(stat -c%s video.zip)
           TAG="converted-$(date +%s)"
           if [ "$SIZE" -le 2097151999 ]; then
-            gh release create "$TAG" output.mp4 --title "Converted $TAG" --notes "Source: ${{ github.event.inputs.url }}"
-            echo "DOWNLOAD: https://github.com/${{ github.repository }}/releases/download/$TAG/output.mp4" >> "$GITHUB_STEP_SUMMARY"
+            gh release create "$TAG" video.zip --title "Converted $TAG" --notes "Source: ${{ github.event.inputs.url }}\n\nUnzip video.zip - andar output.mp4 hai."
+            echo "DOWNLOAD (unzip karo): https://github.com/${{ github.repository }}/releases/download/$TAG/video.zip" >> "$GITHUB_STEP_SUMMARY"
           else
-            split -b 2000M output.mp4 output.mp4.part
-            { echo "Source: ${{ github.event.inputs.url }}"; echo; echo "Join parts to rebuild output.mp4:"; echo "  Linux/Mac: cat output.mp4.part* > output.mp4"; echo "  Windows (cmd): copy /b output.mp4.partaa+output.mp4.partab+output.mp4.partac > output.mp4"; echo; for f in output.mp4.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
-            gh release create "$TAG" output.mp4.part* --title "Converted $TAG" --notes-file notes.txt
+            split -b 2000M video.zip video.zip.part
+            { echo "Source: ${{ github.event.inputs.url }}"; echo; echo "Zip 2GiB se bada hai, isliye parts mein. Rebuild karo:"; echo "  Linux/Mac: cat video.zip.part* > video.zip"; echo "  Windows (cmd): copy /b video.zip.partaa+video.zip.partab+video.zip.partac > video.zip"; echo "  Phir video.zip ko unzip karo = output.mp4."; echo; for f in video.zip.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
+            gh release create "$TAG" video.zip.part* --title "Converted $TAG" --notes-file notes.txt
             cat notes.txt >> "$GITHUB_STEP_SUMMARY"
           fi
 
