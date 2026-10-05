@@ -56,7 +56,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="converted-$(date +%s)"
-          gh release create "$TAG" output.mp4 --title "Converted $TAG" --notes "Source: ${{ github.event.inputs.url }}"
-          echo "DIRECT_DOWNLOAD_LINK=https://github.com/${{ github.repository }}/releases/download/$TAG/output.mp4" >> "$GITHUB_STEP_SUMMARY"
-          echo "RELEASE_TAG=$TAG" >> "$GITHUB_STEP_SUMMARY"
+          SIZE=$(stat -c%s output.mp4)
+          if [ "$SIZE" -le 1610612736 ]; then
+            TAG="converted-$(date +%s)"
+            gh release create "$TAG" output.mp4 --title "Converted $TAG" --notes "Source: ${{ github.event.inputs.url }}"
+            echo "DIRECT LINK (permanent): https://github.com/${{ github.repository }}/releases/download/$TAG/output.mp4" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "video >1.5GiB -> release asset limit (2GiB) ke bahar, artifact use karo" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Print artifact download link
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          AID=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" -q '.artifacts[0].id')
+          echo "ARTIFACT LINK (zip, hai 90 din): https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/$AID" >> "$GITHUB_STEP_SUMMARY"
