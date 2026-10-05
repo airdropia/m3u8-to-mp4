@@ -57,12 +57,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           SIZE=$(stat -c%s output.mp4)
-          if [ "$SIZE" -le 1610612736 ]; then
-            TAG="converted-$(date +%s)"
+          TAG="converted-$(date +%s)"
+          if [ "$SIZE" -le 2097151999 ]; then
             gh release create "$TAG" output.mp4 --title "Converted $TAG" --notes "Source: ${{ github.event.inputs.url }}"
-            echo "DIRECT LINK (permanent): https://github.com/${{ github.repository }}/releases/download/$TAG/output.mp4" >> "$GITHUB_STEP_SUMMARY"
+            echo "DOWNLOAD: https://github.com/${{ github.repository }}/releases/download/$TAG/output.mp4" >> "$GITHUB_STEP_SUMMARY"
           else
-            echo "video >1.5GiB -> release asset limit (2GiB) ke bahar, artifact use karo" >> "$GITHUB_STEP_SUMMARY"
+            split -b 2000M output.mp4 output.mp4.part
+            { echo "Source: ${{ github.event.inputs.url }}"; echo; echo "Join parts to rebuild output.mp4:"; echo "  Linux/Mac: cat output.mp4.part* > output.mp4"; echo "  Windows (cmd): copy /b output.mp4.partaa+output.mp4.partab+output.mp4.partac > output.mp4"; echo; for f in output.mp4.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
+            gh release create "$TAG" output.mp4.part* --title "Converted $TAG" --notes-file notes.txt
+            cat notes.txt >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Print artifact download link
