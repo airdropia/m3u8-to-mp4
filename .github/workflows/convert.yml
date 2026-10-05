@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'm3u8 / HLS link'
+        description: 'm3u8 / HLS / tweet URL (video)'
         required: true
         default: 'https://video.twimg.com/amplify_video/2107018999351410688/pl/avc1/1920x1080/ckTVsct0MPiAKUNM.m3u8'
+      audio_url:
+        description: 'Audio m3u8 URL (optional - agar video-only playlist hai)'
+        required: false
+        default: ''
       compress:
         description: 'Compress video (h265 = ~40-50% chhota, slow; none = copy)'
         required: false
@@ -47,16 +51,50 @@ jobs:
           src=$(find . -maxdepth 1 -name 'video.*' -type f | head -1)
           ext="${src##*.}"
           mv "$src" "raw.$ext"
+
+          # optional separate audio input
+          if [ -n "${{ inputs.audio_url }}" ]; then
+            yt-dlp --retries 10 --continue -f "bestaudio/best" -o "audio.%(ext)s" "${{ inputs.audio_url }}"
+            asrc=$(find . -maxdepth 1 -name 'audio.*' -type f | head -1)
+            aext="${asrc##*.}"
+            mv "$asrc" "raw_audio.$aext"
+          fi
+
           # ponytail: fixed CRF/preset; per-link tuning knobs chahiye to inputs add karna
-          if [ "${{ inputs.compress }}" = "h265" ]; then
-            ffmpeg -y -loglevel warning -i "raw.$ext" -c:v libx265 -crf 25 -preset veryfast -tag:v hvc1 -c:a copy output.mp4
-          elif [ "${{ inputs.compress }}" = "h264" ]; then
-            ffmpeg -y -loglevel warning -i "raw.$ext" -c:v libx264 -crf 23 -preset veryfast -c:a copy output.mp4
+          if [ -n "${{ inputs.audio_url }}" ]; then
+            if [ "${{ inputs.compress }}" = "h265" ]; then
+              ffmpeg -y -loglevel warning -i "raw.$ext" -i "raw_audio.$aext" -map 0:v:0 -map 1:a:0 -c:v libx265 -crf 25 -preset veryfast -tag:v hvc1 -c:a copy output.mp4
+            elif [ "${{ inputs.compress }}" = "h264" ]; then
+              ffmpeg -y -loglevel warning -i "raw.$ext" -i "raw_audio.$aext" -map 0:v:0 -map 1:a:0 -c:v libx264 -crf 23 -preset veryfast -c:a copy output.mp4
+            else
+              ffmpeg -y -loglevel error -i "raw.$ext" -i "raw_audio.$aext" -map 0:v:0 -map 1:a:0 -c copy output.mp4
+            fi
           else
-            ffmpeg -y -loglevel error -i "raw.$ext" -c copy output.mp4
+            if [ "${{ inputs.compress }}" = "h265" ]; then
+              ffmpeg -y -loglevel warning -i "raw.$ext" -c:v libx265 -crf 25 -preset veryfast -tag:v hvc1 -c:a copy output.mp4
+            elif [ "${{ inputs.compress }}" = "h264" ]; then
+              ffmpeg -y -loglevel warning -i "raw.$ext" -c:v libx264 -crf 23 -preset veryfast -c:a copy output.mp4
+            else
+              ffmpeg -y -loglevel error -i "raw.$ext" -c copy output.mp4
+            fi
           fi
           ls -lh raw.$ext output.mp4
           ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4
+
+      - name: Extract audio-only (if audio exists)
+        run: |
+          has_audio=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
+          if [ -n "$has_audio" ]; then
+            if [ "$has_audio" = "aac" ]; then
+              ffmpeg -y -loglevel error -i output.mp4 -vn -c:a copy audio.m4a
+            else
+              ffmpeg -y -loglevel error -i output.mp4 -vn -c:a aac -b:a 160k audio.m4a
+            fi
+            echo "audio codec: $has_audio -> audio.m4a ready"
+            ls -lh audio.m4a
+          else
+            echo "NO AUDIO TRACK in source - audio.m4a skip"
+          fi
 
       - name: Package zip
         run: |
@@ -68,7 +106,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: video
-          path: video.zip
+          path: |
+            video.zip
+            audio.m4a
           if-no-files-found: error
 
       - name: Create release with direct download link
@@ -77,16 +117,21 @@ jobs:
         run: |
           SIZE=$(stat -c%s video.zip)
           TAG="converted-$(date +%s)"
+          AUDIO_ASSET=""
+          [ -f audio.m4a ] && AUDIO_ASSET="audio.m4a"
           if [ "$SIZE" -le 2097151999 ]; then
-            gh release create "$TAG" video.zip --title "Converted $TAG" --notes "Source: ${{ inputs.url }}
+            gh release create "$TAG" video.zip $AUDIO_ASSET --title "Converted $TAG" --notes "Source: ${{ inputs.url }}
 
-          Unzip video.zip - andar output.mp4 hai."
+          Download video.zip - unzip karo = output.mp4.
+          ${AUDIO_ASSET:+Audio-only file bhi attached hai: audio.m4a (chhota download).}"
             echo "DOWNLOAD (unzip karo): https://github.com/${{ github.repository }}/releases/download/$TAG/video.zip" >> "$GITHUB_STEP_SUMMARY"
+            [ -f audio.m4a ] && echo "AUDIO ONLY: https://github.com/${{ github.repository }}/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"
           else
             split -b 2000M video.zip video.zip.part
             { echo "Source: ${{ inputs.url }}"; echo; echo "Zip 2GiB se bada hai, isliye parts mein. Rebuild karo:"; echo "  Linux/Mac: cat video.zip.part* > video.zip"; echo "  Windows (cmd): copy /b video.zip.partaa+video.zip.partab > video.zip"; echo "  Phir video.zip ko unzip karo = output.mp4."; echo; for f in video.zip.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
-            gh release create "$TAG" video.zip.part* --title "Converted $TAG" --notes-file notes.txt
+            gh release create "$TAG" video.zip.part* $AUDIO_ASSET --title "Converted $TAG" --notes-file notes.txt
             cat notes.txt >> "$GITHUB_STEP_SUMMARY"
+            [ -f audio.m4a ] && echo "AUDIO ONLY: https://github.com/${{ github.repository }}/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Print artifact download link
