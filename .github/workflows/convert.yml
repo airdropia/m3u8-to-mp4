@@ -7,6 +7,15 @@ on:
         description: 'm3u8 / HLS link'
         required: true
         default: 'https://video.twimg.com/amplify_video/2107018999351410688/pl/avc1/1920x1080/ckTVsct0MPiAKUNM.m3u8'
+      compress:
+        description: 'Compress video (2GB+ par h265 recommended; slow but ~40-50% chhota)'
+        required: false
+        default: 'none'
+        type: choice
+        options:
+          - none
+          - h265
+          - h264
 
 permissions:
   contents: write
@@ -14,6 +23,7 @@ permissions:
 jobs:
   convert:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
 
@@ -24,7 +34,6 @@ jobs:
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
           yt-dlp --version
-          ffmpeg -version | head -1
 
       - name: Download and convert
         run: |
@@ -34,50 +43,55 @@ jobs:
             --continue \
             --merge-output-format mp4 \
             -o "video.%(ext)s" \
-            "${{ github.event.inputs.url }}"
-          # normalize to a single fixed mp4 name (copy = no re-encode)
+            "${{ inputs.url }}"
           src=$(find . -maxdepth 1 -name 'video.*' -type f | head -1)
           ext="${src##*.}"
           mv "$src" "raw.$ext"
-          ffmpeg -y -loglevel error -i "raw.$ext" -c copy output.mp4
-          ls -lh output.mp4
-          ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4 | awk '{print "duration_s:", $1}'
+          # ponytail: fixed CRF/preset; per-link tuning knobs chahiye to inputs add karna
+          if [ "${{ inputs.compress }}" = "h265" ]; then
+            ffmpeg -y -loglevel warning -i "raw.$ext" -c:v libx265 -crf 25 -preset veryfast -tag:v hvc1 -c:a copy output.mp4
+          elif [ "${{ inputs.compress }}" = "h264" ]; then
+            ffmpeg -y -loglevel warning -i "raw.$ext" -c:v libx264 -crf 23 -preset veryfast -c:a copy output.mp4
+          else
+            ffmpeg -y -loglevel error -i "raw.$ext" -c copy output.mp4
+          fi
+          ls -lh raw.$ext output.mp4
+          ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4
+
+      - name: Package zip
+        run: |
+          python3 -m zipfile -c video.zip output.mp4
+          ls -lh video.zip
 
       - name: Upload artifact
-        if: success()
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: video
           path: video.zip
           if-no-files-found: error
 
-      - name: Package zip
-        if: success()
-        run: |
-          python3 -m zipfile -c video.zip output.mp4
-          ls -lh video.zip
-
       - name: Create release with direct download link
-        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           SIZE=$(stat -c%s video.zip)
           TAG="converted-$(date +%s)"
           if [ "$SIZE" -le 2097151999 ]; then
-            gh release create "$TAG" video.zip --title "Converted $TAG" --notes "Source: ${{ github.event.inputs.url }}\n\nUnzip video.zip - andar output.mp4 hai."
+            gh release create "$TAG" video.zip --title "Converted $TAG" --notes "Source: ${{ inputs.url }}
+
+          Unzip video.zip - andar output.mp4 hai."
             echo "DOWNLOAD (unzip karo): https://github.com/${{ github.repository }}/releases/download/$TAG/video.zip" >> "$GITHUB_STEP_SUMMARY"
           else
             split -b 2000M video.zip video.zip.part
-            { echo "Source: ${{ github.event.inputs.url }}"; echo; echo "Zip 2GiB se bada hai, isliye parts mein. Rebuild karo:"; echo "  Linux/Mac: cat video.zip.part* > video.zip"; echo "  Windows (cmd): copy /b video.zip.partaa+video.zip.partab+video.zip.partac > video.zip"; echo "  Phir video.zip ko unzip karo = output.mp4."; echo; for f in video.zip.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
+            { echo "Source: ${{ inputs.url }}"; echo; echo "Zip 2GiB se bada hai, isliye parts mein. Rebuild karo:"; echo "  Linux/Mac: cat video.zip.part* > video.zip"; echo "  Windows (cmd): copy /b video.zip.partaa+video.zip.partab > video.zip"; echo "  Phir video.zip ko unzip karo = output.mp4."; echo; for f in video.zip.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
             gh release create "$TAG" video.zip.part* --title "Converted $TAG" --notes-file notes.txt
             cat notes.txt >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Print artifact download link
-        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           AID=$(gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts" -q '.artifacts[0].id')
-          echo "ARTIFACT LINK (zip, hai 90 din): https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/$AID" >> "$GITHUB_STEP_SUMMARY"
+          echo "ARTIFACT LINK (login chahiye): https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/$AID" >> "$GITHUB_STEP_SUMMARY"
