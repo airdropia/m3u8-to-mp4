@@ -1,0 +1,42 @@
+name: debug-tg
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 't.me post URL to inspect'
+        required: true
+        default: 'https://t.me/MehmatFatihUrdu/576'
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fetch embed page
+        run: |
+          curl -sL -A "Mozilla/5.0" "${{ inputs.url }}?embed=1&single" -o page.html
+          wc -c page.html
+
+          echo "=== data-file attrs ==="
+          grep -oE 'data-file="[^"]*"' page.html || echo "(none)"
+
+          echo "=== media widget classes ==="
+          grep -oE 'class="tgme_widget_message[^"]*"' page.html | sort -u || echo "(none)"
+
+          echo "=== video tags ==="
+          grep -oE '<video[^>]*>' page.html || echo "(none)"
+
+          echo "=== t.me/i/ direct file urls ==="
+          grep -oE 'https?://t\.me/i/[a-z]+/[^"'"'"' )]*' page.html | sort -u || echo "(none)"
+
+          echo "=== file extension links ==="
+          grep -oE 'href="[^"]*\.(mp4|mkv|mov|webm|m4v|avi)[^"]*"' page.html || echo "(none)"
+
+          echo "=== page error markers ==="
+          grep -oE '(This channel|not found|blocked|unavailable)[^<]{0,80}' page.html | head -5 || echo "(none)"
+
+          echo "=== full message media block (first 4000 chars around media) ==="
+          grep -A6 -oE 'tgme_widget_message_media[^>]*>' page.html | head -40 || echo "(none)"
