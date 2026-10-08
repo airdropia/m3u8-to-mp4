@@ -40,3 +40,9 @@ jobs:
 
           echo "=== full message media block (first 4000 chars around media) ==="
           grep -A6 -oE 'tgme_widget_message_media[^>]*>' page.html | head -40 || echo "(none)"
+
+          echo "=== all hrefs in post ==="
+          grep -oE 'href="[^"]*"' page.html | sort -u
+
+          echo "=== message text ==="
+          grep -oE 'tgme_widget_message_text[^>]*>.{0,600}' page.html | head -3
