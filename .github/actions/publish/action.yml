@@ -1,0 +1,79 @@
+name: Publish download
+description: Extract audio-only, zip deliverables, upload artifact, create release with public direct links
+
+inputs:
+  tag-prefix:
+    description: Release tag prefix (timestamp is appended)
+    required: false
+    default: 'h265'
+  source:
+    description: Original source URL, recorded in release notes
+    required: false
+    default: ''
+  artifact-name:
+    description: Artifact name - must be unique per job (v4 rejects duplicates)
+    required: false
+    default: 'video'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        has_audio=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
+        if [ -n "$has_audio" ]; then
+          if [ "$has_audio" = "aac" ]; then
+            ffmpeg -y -loglevel error -i output.mp4 -vn -c:a copy audio.m4a
+          else
+            ffmpeg -y -loglevel error -i output.mp4 -vn -c:a aac -b:a 160k audio.m4a
+          fi
+          echo "audio codec: $has_audio -> audio.m4a ready"
+          ls -lh audio.m4a
+        else
+          echo "NO AUDIO TRACK in source - audio.m4a skip"
+        fi
+
+    - shell: bash
+      run: |
+        set -euo pipefail
+        files="output.mp4"
+        # `&&` form set -e ke saath step fail kar deta hai jab file missing ho, isliye if use karo
+        if [ -f audio.m4a ]; then files="$files audio.m4a"; fi
+        subs=$(ls ./*.srt ./*.vtt 2>/dev/null || true)
+        if [ -n "$subs" ]; then files="$files $subs"; fi
+        python3 -m zipfile -c video.zip $files
+        ls -lh video.zip
+
+    - uses: actions/upload-artifact@v4
+      continue-on-error: true
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: video.zip
+        if-no-files-found: error
+
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPO: ${{ github.repository }}
+        TAG_PREFIX: ${{ inputs.tag-prefix }}
+        SRC: ${{ inputs.source }}
+      run: |
+        set -euo pipefail
+        TAG="$TAG_PREFIX-$(date +%s)"
+        AUDIO_ASSET=""
+        if [ -f audio.m4a ]; then AUDIO_ASSET="audio.m4a"; fi
+        SIZE=$(stat -c%s video.zip)
+        if [ "$SIZE" -le 2097151999 ]; then
+          gh release create "$TAG" video.zip $AUDIO_ASSET --title "H265 $TAG" --notes "Source: $SRC
+
+        H.265 mp4 (Apple-compatible hvc1). Unzip = output.mp4.
+        ${AUDIO_ASSET:+Audio-only bhi attached: audio.m4a (chhota download).}"
+          echo "DOWNLOAD (unzip karo): https://github.com/$REPO/releases/download/$TAG/video.zip" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f audio.m4a ]; then echo "AUDIO ONLY: https://github.com/$REPO/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"; fi
+        else
+          split -b 2000M video.zip video.zip.part
+          { echo "Source: $SRC"; echo; echo "Zip 2GiB se bada hai, isliye parts mein. Rebuild karo:"; echo "  Linux/Mac: cat video.zip.part* > video.zip"; echo "  Windows (cmd): copy /b video.zip.partaa+video.zip.partab > video.zip"; echo "  Phir video.zip ko unzip karo = output.mp4."; echo; for f in video.zip.part*; do echo "https://github.com/$REPO/releases/download/$TAG/$f"; done; } > notes.txt
+          gh release create "$TAG" video.zip.part* $AUDIO_ASSET --title "H265 $TAG" --notes-file notes.txt
+          cat notes.txt >> "$GITHUB_STEP_SUMMARY"
+        fi

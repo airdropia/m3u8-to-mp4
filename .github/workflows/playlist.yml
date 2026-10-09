@@ -1,0 +1,155 @@
+name: H265 playlist download
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Playlist URL (YouTube playlist, channel, or yt-dlp supported playlist)'
+        required: true
+      items:
+        description: 'Playlist items. Range ya list. 1:5 = pehle 5, 1,4,9 = only those, empty = all'
+        required: false
+        default: ''
+      max_episodes:
+        description: 'Safety cap (0 = no cap). Chhota rakho, CPU time expensive hai'
+        required: false
+        default: '20'
+      preset:
+        description: 'x265 preset = speed vs size trade-off'
+        required: false
+        default: 'veryfast'
+        type: choice
+        options:
+          - veryfast
+          - fast
+          - medium
+      crf:
+        description: 'x265 CRF (lower = better quality, bigger file)'
+        required: false
+        default: '25'
+      height:
+        description: 'Max height (empty = source). 720 = ~half the data'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+  # matrix parallel jobs ek saath chalte hain, isliye 3 min beech me queue mat lo
+  actions: read
+
+jobs:
+  plan:
+    name: Plan playlist
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+      total: ${{ steps.build.outputs.total }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yt-dlp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      - name: Enumerate playlist
+        env:
+          URL: ${{ inputs.url }}
+          ITEMS: ${{ inputs.items }}
+          MAX: ${{ inputs.max_episodes }}
+        run: |
+          set -euo pipefail
+          args=(--flat-playlist --dump-json --no-warnings)
+          # -I current syntax hai; --playlist-start/--playlist-end deprecated youtube-dl aliases hain
+          # `&&` form use mat karo: empty ITEMS pe exit 1 se set -e step fail kar deta hai
+          if [ -n "$ITEMS" ]; then args+=(-I "$ITEMS"); fi
+          yt-dlp "${args[@]}" "$URL" > entries.jsonl || true
+          wc -l < entries.jsonl
+
+      - name: Build matrix
+        id: build
+        env:
+          MAX: ${{ inputs.max_episodes }}
+        run: |
+          set -euo pipefail
+          matrix=$(jq -sc --argjson max "${MAX:-0}" '
+            # --flat-playlist entries: id/title/url, index null hota hai
+            map({url: (.url // .webpage_url), title: (.title // .id), id: .id})
+            | map(select(.url != null))
+            | if $max > 0 then .[:$max] else . end
+            | to_entries
+            | map({idx: (.key + 1), url: .value.url, title: .value.title, id: .value.id})
+          ' entries.jsonl)
+          total=$(echo "$matrix" | jq 'length')
+          if [ "$total" -eq 0 ]; then
+            echo "Playlist empty ya URL playlist nahi hai. Check the URL, or 'items' range." >&2
+            exit 1
+          fi
+          echo "Episodes planned: $total"
+          echo "$matrix" | jq -r '.[] | "  \(.idx). \(.title)"'
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "total=$total" >> "$GITHUB_OUTPUT"
+
+  download:
+    name: Episode ${{ matrix.episode.idx }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      # fail-fast off: ek episode fail ho to baaki ke link bante rahenge
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        episode: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg + yt-dlp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+
+      - name: Download episode
+        env:
+          EP_URL: ${{ matrix.episode.url }}
+          HEIGHT: ${{ inputs.height }}
+        run: |
+          set -euo pipefail
+          fmt="bestvideo[height<=${HEIGHT:-9999}]+bestaudio/best"
+          yt-dlp \
+            --concurrent-fragments 16 \
+            --retries 10 \
+            --continue \
+            --no-playlist \
+            -f "$fmt" \
+            --merge-output-format mp4 \
+            --write-subs --write-auto-subs \
+            --sub-langs "en.*,ur.*,hi.*" \
+            --convert-subs srt \
+            -o "video.%(ext)s" \
+            "$EP_URL"
+          # subtitle files bhi 'video.*' se match ho jaate hain, isliye exclude zaroori hai
+          src=$(find . -maxdepth 1 -name 'video.*' -type f ! -name '*.srt' ! -name '*.vtt' ! -name '*.ass' | head -1)
+          mv "$src" "raw.${src##*.}"
+          echo "ext=${src##*.}" >> "$GITHUB_ENV"
+
+      - name: Encode H265
+        uses: ./.github/actions/encode-h265
+        with:
+          video: raw.${{ env.ext }}
+          crf: ${{ inputs.crf }}
+          preset: ${{ inputs.preset }}
+          out: output.mp4
+
+      - name: Publish
+        uses: ./.github/actions/publish
+        with:
+          tag-prefix: ep${{ matrix.episode.idx }}
+          artifact-name: ep${{ matrix.episode.idx }}
+          source: ${{ matrix.episode.url }}

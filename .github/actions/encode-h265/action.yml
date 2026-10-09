@@ -1,0 +1,48 @@
+name: Encode H265
+description: Re-encode a downloaded video to H.265 mp4 with Apple-compatible hvc1 tag
+
+inputs:
+  video:
+    description: Path to source video file
+    required: true
+  audio:
+    description: Optional path to a separate audio file to mux in
+    required: false
+    default: ''
+  crf:
+    description: x265 CRF quality (lower = better quality, bigger file)
+    required: false
+    default: '25'
+  preset:
+    description: x265 preset
+    required: false
+    default: 'veryfast'
+  out:
+    description: Output mp4 path
+    required: false
+    default: 'output.mp4'
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        SRC_VIDEO: ${{ inputs.video }}
+        SRC_AUDIO: ${{ inputs.audio }}
+        CRF: ${{ inputs.crf }}
+        PRESET: ${{ inputs.preset }}
+        OUT: ${{ inputs.out }}
+      run: |
+        set -euo pipefail
+        if [ -n "$SRC_AUDIO" ]; then
+          ffmpeg -y -loglevel warning -i "$SRC_VIDEO" -i "$SRC_AUDIO" \
+            -map 0:v:0 -map 1:a:0 \
+            -c:v libx265 -crf "$CRF" -preset "$PRESET" -tag:v hvc1 \
+            -c:a copy -movflags +faststart "$OUT"
+        else
+          ffmpeg -y -loglevel warning -i "$SRC_VIDEO" \
+            -c:v libx265 -crf "$CRF" -preset "$PRESET" -tag:v hvc1 \
+            -c:a copy -movflags +faststart "$OUT"
+        fi
+        echo "video tag: $(ffprobe -v error -select_streams v:0 -show_entries stream=codec_tag_string -of csv=p=0 "$OUT")"
+        ffprobe -v error -show_entries format=duration,size -of csv=p=0 "$OUT"

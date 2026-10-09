@@ -1,0 +1,4 @@
+# GitHub Actions runners hamesha Linux hain - shell steps CRLF pe fail hote hain
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf

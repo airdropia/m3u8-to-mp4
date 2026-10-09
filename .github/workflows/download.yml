@@ -1,0 +1,119 @@
+name: H265 download (single)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'm3u8 / HLS / yt-dlp supported site URL (video only, no playlist)'
+        required: true
+      audio_url:
+        description: 'Separate audio m3u8 URL (optional - jab source video-only ho)'
+        required: false
+        default: ''
+      preset:
+        description: 'x265 preset = speed vs size trade-off (medium sabse balanced)'
+        required: false
+        default: 'veryfast'
+        type: choice
+        options:
+          - veryfast
+          - fast
+          - medium
+      crf:
+        description: 'x265 CRF (lower = better quality, bigger file). 23-28 normal'
+        required: false
+        default: '25'
+      height:
+        description: 'Max height (empty = source). 720 = ~half the data'
+        required: false
+        default: ''
+      subs:
+        description: 'Download subtitles into the zip (yes/no)'
+        required: false
+        default: 'yes'
+        type: choice
+        options:
+          - yes
+          - 'no'
+
+permissions:
+  contents: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg + yt-dlp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      - name: Download
+        env:
+          URL: ${{ inputs.url }}
+          AUDIO_URL: ${{ inputs.audio_url }}
+          HEIGHT: ${{ inputs.height }}
+          SUBS: ${{ inputs.subs }}
+        run: |
+          set -euo pipefail
+          fmt="bestvideo[height<=${HEIGHT:-9999}]+bestaudio/best"
+          subs_flag=()
+          if [ "$SUBS" = "yes" ]; then
+            subs_flag=(--write-subs --write-auto-subs --sub-langs "en.*,ur.*,hi.*" --convert-subs srt)
+          fi
+
+          yt-dlp \
+            --concurrent-fragments 16 \
+            --retries 10 \
+            --continue \
+            --no-playlist \
+            -f "$fmt" \
+            --merge-output-format mp4 \
+            "${subs_flag[@]}" \
+            -o "video.%(ext)s" \
+            "$URL"
+
+          # subtitle files bhi 'video.*' se match ho jaate hain, isliye exclude zaroori hai
+          src=$(find . -maxdepth 1 -name 'video.*' -type f ! -name '*.srt' ! -name '*.vtt' ! -name '*.ass' | head -1)
+          mv "$src" "raw.${src##*.}"
+          echo "ext=${src##*.}" >> "$GITHUB_ENV"
+
+          if [ -n "$AUDIO_URL" ]; then
+            yt-dlp --retries 10 --continue --no-playlist -f "bestaudio/best" -o "audio.%(ext)s" "$AUDIO_URL"
+            asrc=$(find . -maxdepth 1 -name 'audio.*' -type f ! -name '*.srt' ! -name '*.vtt' | head -1)
+            mv "$asrc" "raw_audio.${asrc##*.}"
+            echo "audio_ext=${asrc##*.}" >> "$GITHUB_ENV"
+          else
+            echo "audio_ext=" >> "$GITHUB_ENV"
+          fi
+
+      - name: Encode H265
+        uses: ./.github/actions/encode-h265
+        with:
+          video: raw.${{ env.ext }}
+          audio: ${{ env.audio_ext && format('raw_audio.{0}', env.audio_ext) || '' }}
+          crf: ${{ inputs.crf }}
+          preset: ${{ inputs.preset }}
+          out: output.mp4
+
+      - name: Report sizes
+        env:
+          SRC_EXT: ${{ env.ext }}
+        run: |
+          set -euo pipefail
+          ls -lh "raw.$SRC_EXT" output.mp4
+          sbytes=$(stat -c%s "raw.$SRC_EXT")
+          obt=$(stat -c%s output.mp4)
+          echo "source: $sbytes bytes / output: $obt bytes / saved: $(( 100 - obt * 100 / sbytes ))%"
+
+      - name: Publish
+        uses: ./.github/actions/publish
+        with:
+          tag-prefix: h265
+          source: ${{ inputs.url }}
