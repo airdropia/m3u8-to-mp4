@@ -77,21 +77,29 @@ jobs:
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
 
-      - name: Download section + h265 encode
+      - name: Resolve variant URLs
         run: |
-          yt-dlp \
-            --concurrent-fragments 8 \
-            --retries 10 \
-            --download-sections "*${{ matrix.chunk.s }}-${{ matrix.chunk.e }}" \
-            -f "bestvideo+bestaudio/best" \
-            --merge-output-format mp4 \
-            -o "raw.%(ext)s" \
-            "${{ inputs.url }}"
-          src=$(find . -maxdepth 1 -name 'raw.*' -type f | head -1)
-          ext="${src##*.}"
+          VURL=$(yt-dlp --no-warnings -f "bestvideo/best" -g "${{ inputs.url }}" | head -1)
+          AURL=$(yt-dlp --no-warnings -f "bestaudio/best" -g "${{ inputs.url }}" 2>/dev/null | head -1 || true)
+          echo "VURL=$VURL" >> "$GITHUB_ENV"
+          echo "AURL=$AURL" >> "$GITHUB_ENV"
 
-          # ponytail: audio uniform aac 128k + reset timestamps so concat -c copy is safe
-          ffmpeg -y -loglevel warning -i "raw.$ext" \
+      - name: Slice section + h265 encode
+        run: |
+          s=${{ matrix.chunk.s }}
+          len=$(python3 -c "print(round(${{ matrix.chunk.e }} - $s, 3))")
+
+          # ponytail: ffmpeg se HLS slice (yt-dlp --download-sections HLS+separate-audio pe 262B stub deta hai)
+          if [ -n "$AURL" ] && [ "$AURL" != "$VURL" ]; then
+            ffmpeg -y -loglevel warning -ss "$s" -t "$len" -i "$VURL" -ss "$s" -t "$len" -i "$AURL" \
+              -map 0:v:0 -map 1:a:0 -c copy -avoid_negative_ts make_zero raw.mp4
+          else
+            ffmpeg -y -loglevel warning -ss "$s" -t "$len" -i "$VURL" \
+              -map 0:v:0 -map 0:a:0? -c copy -avoid_negative_ts make_zero raw.mp4
+          fi
+          ls -lh raw.mp4
+
+          ffmpeg -y -loglevel warning -i raw.mp4 \
             -c:v libx265 -crf ${{ inputs.crf }} -preset ${{ inputs.preset }} -tag:v hvc1 \
             -c:a aac -b:a 128k \
             -fflags +genpts -reset_timestamps 1 \
