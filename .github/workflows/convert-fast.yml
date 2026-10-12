@@ -77,27 +77,33 @@ jobs:
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
 
-      - name: Download source
+      - name: Download source (video+audio merged)
         run: |
+          # master playlist se best video + best audio download hoke ek mp4 me merge hote hai
+          # (yt-dlp --merge-output-format mp4) - isliye chunk encode me dono tracks available hain
           yt-dlp \
             --concurrent-fragments 16 \
             --retries 10 \
+            -f "bestvideo+bestaudio/best" \
             --merge-output-format mp4 \
             -o "src.%(ext)s" \
             "${{ inputs.url }}"
           find . -maxdepth 1 -name 'src.*' -type f -exec ls -lh {} \;
+          src=$(find . -maxdepth 1 -name 'src.*' -type f | head -1)
+          ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 "$src"
 
-      - name: Encode chunk (h265)
+      - name: Encode chunk (h265 + aac, dono tracks ek file me)
         run: |
           src=$(find . -maxdepth 1 -name 'src.*' -type f | head -1)
           s=${{ matrix.chunk.s }}
           len=$(python3 -c "print(round(${{ matrix.chunk.e }} - $s, 3))")
 
           # ponytail: input-seek on local file; fMP4 HLS pe copy-slice corrupt file deta hai
+          # aresample: har chunk me audio resample hota hai -> concat pe seamless join
           ffmpeg -y -loglevel warning -ss "$s" -t "$len" -i "$src" \
             -c:v libx265 -crf ${{ inputs.crf }} -preset ${{ inputs.preset }} -tag:v hvc1 \
-            -c:a aac -b:a 128k \
-            -fflags +genpts -reset_timestamps 1 \
+            -c:a aac -b:a 128k -af aresample=async=1:first_pts=0 \
+            -fflags +genpts -reset_timestamps 1 -avoid_negative_ts make_zero \
             "chunk_${{ matrix.chunk.name }}.mp4"
 
           ls -lh "chunk_${{ matrix.chunk.name }}.mp4"
@@ -114,6 +120,9 @@ jobs:
     needs: [probe, encode]
     runs-on: ubuntu-latest
     timeout-minutes: 350
+    env:
+      SRC_DURATION: ${{ needs.probe.outputs.duration }}
+      AUDIO_URL: ${{ inputs.audio_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -135,20 +144,42 @@ jobs:
           ls -lh chunk_*.mp4
           for f in $(ls chunk_*.mp4 | sort); do echo "file '$PWD/$f'"; done > list.txt
           cat list.txt
+          # har chunk me video+audio dono hain, isliye concat se hi single A+V file ban jata hai
           ffmpeg -y -loglevel warning -f concat -safe 0 -i list.txt -c copy merged.mp4
           ls -lh merged.mp4
 
-          if [ -n "${{ inputs.audio_url }}" ]; then
-            yt-dlp --retries 10 -f "bestaudio/best" -o "raw_audio.%(ext)s" "${{ inputs.audio_url }}"
+          if [ -n "$AUDIO_URL" ]; then
+            # video-only source + alag audio_url -> yahan audio attach (aac me encode, copy nahi,
+            # kyunki opus/webm audio ko mp4 me -c copy se nahi daal sakte)
+            yt-dlp --retries 10 -f "bestaudio/best" -o "raw_audio.%(ext)s" "$AUDIO_URL"
             asrc=$(find . -maxdepth 1 -name 'raw_audio.*' -type f | head -1)
-            aext="${asrc##*.}"
-            ffmpeg -y -loglevel warning -i merged.mp4 -i "raw_audio.$aext" -map 0:v:0 -map 1:a:0 -c copy output.mp4
+            ffmpeg -y -loglevel warning -i merged.mp4 -i "$asrc" \
+              -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 128k -shortest output.mp4
           else
             mv merged.mp4 output.mp4
           fi
 
           ls -lh output.mp4
-          ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4
+
+      - name: Verify output (dono tracks + duration)
+        run: |
+          v=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
+          a=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
+          d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4)
+          echo "video=$v audio=${a:-NONE} duration=$d (source=$SRC_DURATION)"
+          [ -n "$v" ] || { echo "::error::no video track"; exit 1; }
+          if [ -z "$a" ] && [ -z "$AUDIO_URL" ]; then
+            echo "::error::source me audio track nahi mila - video-only output ban raha hai"
+            exit 1
+          fi
+          python3 -c "
+          import sys
+          d, s = float('$d'), float('$SRC_DURATION')
+          diff = abs(d - s)
+          print(f'duration drift: {diff:.3f}s')
+          sys.exit(0 if diff < 5 else 1)
+          " || { echo "::error::output duration source se 5s+ different hai - koi chunk missing/duplicate"; exit 1; }
+          echo "AUDIO OK: $a"
 
       - name: Extract audio-only (if audio exists)
         run: |
