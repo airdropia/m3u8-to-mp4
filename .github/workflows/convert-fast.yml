@@ -23,6 +23,29 @@ on:
         description: 'x265 preset (ultrafast fastest, veryfast/medium slower+smaller)'
         required: false
         default: 'ultrafast'
+  # telegram-to-mp4.yml isse call karta hai (source = telegram se download hua mp4)
+  workflow_call:
+    inputs:
+      url:
+        description: 'Source video URL (direct mp4 / m3u8 master)'
+        required: true
+        type: string
+      audio_url:
+        required: false
+        type: string
+        default: ''
+      chunks:
+        required: false
+        type: string
+        default: '8'
+      crf:
+        required: false
+        type: string
+        default: '28'
+      preset:
+        required: false
+        type: string
+        default: 'ultrafast'
 
 permissions:
   contents: write

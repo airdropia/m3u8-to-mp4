@@ -1,0 +1,94 @@
+name: telegram to mp4 (h265, no local machine)
+
+# Poora kaam GitHub runner pe: tdl se authenticated Telegram media download,
+# source ko release-asset bana ke convert-fast (parallel h265 + zip) ko call.
+# Local machine pe kuch bhi download/encode nahi hota.
+#
+# Setup (ek baar): repo secrets me TG_PHONE aur TG_LOGIN_CODE set karo.
+#   TG_PHONE       = country code ke saath, e.g. 989xxxxxxxxx
+#   TG_LOGIN_CODE  = Telegram app -> Settings -> Device -> Link Desktop Account se mila
+#                    5-digit code (valid ~3 min). Dispatch se thodi der pehle set karo.
+
+on:
+  workflow_dispatch:
+    inputs:
+      link:
+        description: 'Telegram link (t.me/channel/post, ya channel/123-140 range)'
+        required: true
+        default: 'https://t.me/MehmatFatihUrdu/576'
+      chunks:
+        description: 'Parallel encode chunks (jitne chunks, utne jobs)'
+        required: false
+        default: '8'
+      crf:
+        description: 'h265 CRF (chhota number = better quality/bigger)'
+        required: false
+        default: '28'
+      preset:
+        description: 'x265 preset (ultrafast fastest, veryfast/medium slower+smaller)'
+        required: false
+        default: 'ultrafast'
+
+permissions:
+  contents: write
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      url: ${{ steps.rel.outputs.url }}
+    steps:
+      - name: Install tdl
+        run: |
+          curl -sL https://github.com/iyear/tdl/releases/latest/download/tdl_Linux_64bit.tar.gz | tar xz -C /usr/local/bin
+          tdl version
+
+      - name: Login (phone + code)
+        env:
+          PHONE: ${{ secrets.TG_PHONE }}
+          CODE: ${{ secrets.TG_LOGIN_CODE }}
+        run: |
+          if [ -z "$PHONE" ] || [ -z "$CODE" ]; then
+            echo "::error::repo secrets TG_PHONE aur TG_LOGIN_CODE set karo (Settings > Secrets > Actions)"
+            exit 1
+          fi
+          # tdl ka survey prompt TTY maangta hai; GitHub runner pe TTY nahi hota.
+          # script se pseudo-TTY milta hai aur piped input usme chala jata hai.
+          printf '%s\n%s\n' "$PHONE" "$CODE" | script -qec "tdl login -T code" /dev/null
+          tdl chat ls
+          echo "login ok"
+
+      - name: Download media
+        run: |
+          mkdir -p out
+          tdl dl -u "${{ inputs.link }}" -d out
+          ls -lh out
+          find out -type f -size +1M -printf '%s %p\n' | sort -rn | head -5
+
+      - name: Publish source + call h265 pipeline
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          f=$(find out -type f -size +1M | head -1)
+          if [ -z "$f" ]; then
+            echo "::error::is link pe koi media nahi mila - post shayad text-only/link-preview hai"
+            exit 1
+          fi
+          asset="source$(echo "$f" | grep -oE '\.[a-z0-9]{2,4}$')"
+          TAG="tg-src-$(date +%s)"
+          gh release create "$TAG" "$f#$asset" --title "Telegram source $TAG" \
+            --notes "Raw download for ${{ inputs.link }} (no re-encode)."
+          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$asset"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "SOURCE (unedited): $URL" >> "$GITHUB_STEP_SUMMARY"
+
+  convert:
+    needs: fetch
+    uses: ./.github/workflows/convert-fast.yml
+    with:
+      url: ${{ needs.fetch.outputs.url }}
+      chunks: ${{ inputs.chunks }}
+      crf: ${{ inputs.crf }}
+      preset: ${{ inputs.preset }}
