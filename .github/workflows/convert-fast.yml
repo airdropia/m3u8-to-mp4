@@ -1,0 +1,199 @@
+name: m3u8 to mp4 (fast parallel h265)
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'm3u8 / HLS / tweet URL (master playlist with audio)'
+        required: true
+        default: 'https://video.twimg.com/amplify_video/2109508195903262720/pl/9YdWcnNCBN170WkD.m3u8?tag=29'
+      audio_url:
+        description: 'Audio m3u8 URL (optional - video-only source ke liye)'
+        required: false
+        default: ''
+      chunks:
+        description: 'Parallel chunks (jitne chunks, utne jobs)'
+        required: false
+        default: '8'
+      crf:
+        description: 'h265 CRF (chhota number = better quality/bigger)'
+        required: false
+        default: '28'
+      preset:
+        description: 'x265 preset (ultrafast fastest, veryfast/medium slower+smaller)'
+        required: false
+        default: 'ultrafast'
+
+permissions:
+  contents: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    outputs:
+      chunks: ${{ steps.plan.outputs.chunks }}
+      duration: ${{ steps.plan.outputs.duration }}
+    steps:
+      - name: Install yt-dlp
+        run: |
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+
+      - name: Probe duration and build chunk matrix
+        id: plan
+        run: |
+          dur=$(yt-dlp --no-warnings --print duration "${{ inputs.url }}")
+          if [ -z "$dur" ] || [ "$dur" = "NA" ] || [ "$dur" = "None" ]; then
+            echo "::error::duration probe failed for input url (got: '$dur')"
+            exit 1
+          fi
+          echo "duration=$dur" >> "$GITHUB_OUTPUT"
+          python3 -c "
+          import json
+          d = float('$dur')
+          n = max(1, int('${{ inputs.chunks }}'))
+          w = max(1, len(str(n - 1)))
+          plan = [{'i': i, 'name': str(i).zfill(w),
+                   's': round(i * d / n, 3),
+                   'e': round((i + 1) * d / n if i < n - 1 else d, 3)} for i in range(n)]
+          print(json.dumps(plan))
+          " > plan.json
+          echo "chunks=$(cat plan.json)" >> "$GITHUB_OUTPUT"
+          echo "duration: $dur s -> $(cat plan.json)"
+
+  encode:
+    needs: probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    strategy:
+      fail-fast: false
+      matrix:
+        chunk: ${{ fromJSON(needs.probe.outputs.chunks) }}
+    steps:
+      - name: Install ffmpeg + yt-dlp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+
+      - name: Download section + h265 encode
+        run: |
+          yt-dlp \
+            --concurrent-fragments 8 \
+            --retries 10 \
+            --download-sections "*${{ matrix.chunk.s }}-${{ matrix.chunk.e }}" \
+            -f "bestvideo+bestaudio/best" \
+            --merge-output-format mp4 \
+            -o "raw.%(ext)s" \
+            "${{ inputs.url }}"
+          src=$(find . -maxdepth 1 -name 'raw.*' -type f | head -1)
+          ext="${src##*.}"
+
+          # ponytail: audio uniform aac 128k + reset timestamps so concat -c copy is safe
+          ffmpeg -y -loglevel warning -i "raw.$ext" \
+            -c:v libx265 -crf ${{ inputs.crf }} -preset ${{ inputs.preset }} -tag:v hvc1 \
+            -c:a aac -b:a 128k \
+            -fflags +genpts -reset_timestamps 1 \
+            "chunk_${{ matrix.chunk.name }}.mp4"
+
+          ls -lh "chunk_${{ matrix.chunk.name }}.mp4"
+          ffprobe -v error -show_entries format=duration -of csv=p=0 "chunk_${{ matrix.chunk.name }}.mp4"
+
+      - name: Upload chunk
+        uses: actions/upload-artifact@v4
+        with:
+          name: chunk-${{ matrix.chunk.name }}
+          path: chunk_${{ matrix.chunk.name }}.mp4
+          if-no-files-found: error
+
+  merge:
+    needs: [probe, encode]
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ffmpeg + yt-dlp
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+
+      - name: Download all chunks
+        uses: actions/download-artifact@v4
+        with:
+          pattern: chunk-*
+          merge-multiple: true
+
+      - name: Concat chunks
+        run: |
+          ls -lh chunk_*.mp4
+          for f in $(ls chunk_*.mp4 | sort); do echo "file '$PWD/$f'"; done > list.txt
+          cat list.txt
+          ffmpeg -y -loglevel warning -f concat -safe 0 -i list.txt -c copy merged.mp4
+          ls -lh merged.mp4
+
+          if [ -n "${{ inputs.audio_url }}" ]; then
+            yt-dlp --retries 10 -f "bestaudio/best" -o "raw_audio.%(ext)s" "${{ inputs.audio_url }}"
+            asrc=$(find . -maxdepth 1 -name 'raw_audio.*' -type f | head -1)
+            aext="${asrc##*.}"
+            ffmpeg -y -loglevel warning -i merged.mp4 -i "raw_audio.$aext" -map 0:v:0 -map 1:a:0 -c copy output.mp4
+          else
+            mv merged.mp4 output.mp4
+          fi
+
+          ls -lh output.mp4
+          ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4
+
+      - name: Extract audio-only (if audio exists)
+        run: |
+          has_audio=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
+          if [ -n "$has_audio" ]; then
+            ffmpeg -y -loglevel error -i output.mp4 -vn -c:a copy audio.m4a
+            echo "audio codec: $has_audio -> audio.m4a ready"
+            ls -lh audio.m4a
+          else
+            echo "NO AUDIO TRACK in source - audio.m4a skip"
+          fi
+
+      - name: Package zip
+        run: |
+          python3 -m zipfile -c video.zip output.mp4
+          ls -lh video.zip
+
+      - name: Upload artifact
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: video
+          path: |
+            video.zip
+            audio.m4a
+          if-no-files-found: error
+
+      - name: Create release with direct download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SIZE=$(stat -c%s video.zip)
+          TAG="converted-fast-$(date +%s)"
+          AUDIO_ASSET=""
+          [ -f audio.m4a ] && AUDIO_ASSET="audio.m4a"
+          if [ "$SIZE" -le 2097151999 ]; then
+            gh release create "$TAG" video.zip $AUDIO_ASSET --title "Converted (parallel) $TAG" --notes "Source: ${{ inputs.url }}
+
+          Parallel h265 encode: ${{ inputs.chunks }} chunks, crf ${{ inputs.crf }}, preset ${{ inputs.preset }}.
+
+          Download video.zip - unzip karo = output.mp4.
+          ${AUDIO_ASSET:+Audio-only file bhi attached hai: audio.m4a (chhota download).}"
+            echo "DOWNLOAD (unzip karo): https://github.com/${{ github.repository }}/releases/download/$TAG/video.zip" >> "$GITHUB_STEP_SUMMARY"
+            [ -f audio.m4a ] && echo "AUDIO ONLY: https://github.com/${{ github.repository }}/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"
+          else
+            split -b 2000M video.zip video.zip.part
+            { echo "Source: ${{ inputs.url }}"; echo; echo "Zip 2GiB se bada hai, isliye parts mein. Rebuild karo:"; echo "  Linux/Mac: cat video.zip.part* > video.zip"; echo "  Windows (cmd): copy /b video.zip.partaa+video.zip.partab > video.zip"; echo "  Phir video.zip ko unzip karo = output.mp4."; echo; for f in video.zip.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
+            gh release create "$TAG" video.zip.part* $AUDIO_ASSET --title "Converted (parallel) $TAG" --notes-file notes.txt
+            cat notes.txt >> "$GITHUB_STEP_SUMMARY"
+            [ -f audio.m4a ] && echo "AUDIO ONLY: https://github.com/${{ github.repository }}/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"
+          fi
