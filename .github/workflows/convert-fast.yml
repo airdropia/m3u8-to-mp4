@@ -77,29 +77,24 @@ jobs:
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
 
-      - name: Resolve variant URLs
+      - name: Download source
         run: |
-          VURL=$(yt-dlp --no-warnings -f "bestvideo/best" -g "${{ inputs.url }}" | head -1)
-          AURL=$(yt-dlp --no-warnings -f "bestaudio/best" -g "${{ inputs.url }}" 2>/dev/null | head -1 || true)
-          echo "VURL=$VURL" >> "$GITHUB_ENV"
-          echo "AURL=$AURL" >> "$GITHUB_ENV"
+          yt-dlp \
+            --concurrent-fragments 16 \
+            --retries 10 \
+            --merge-output-format mp4 \
+            -o "src.%(ext)s" \
+            "${{ inputs.url }}"
+          find . -maxdepth 1 -name 'src.*' -type f -exec ls -lh {} \;
 
-      - name: Slice section + h265 encode
+      - name: Encode chunk (h265)
         run: |
+          src=$(find . -maxdepth 1 -name 'src.*' -type f | head -1)
           s=${{ matrix.chunk.s }}
           len=$(python3 -c "print(round(${{ matrix.chunk.e }} - $s, 3))")
 
-          # ponytail: ffmpeg se HLS slice (yt-dlp --download-sections HLS+separate-audio pe 262B stub deta hai)
-          if [ -n "$AURL" ] && [ "$AURL" != "$VURL" ]; then
-            ffmpeg -y -loglevel warning -ss "$s" -t "$len" -i "$VURL" -ss "$s" -t "$len" -i "$AURL" \
-              -map 0:v:0 -map 1:a:0 -c copy -avoid_negative_ts make_zero raw.mp4
-          else
-            ffmpeg -y -loglevel warning -ss "$s" -t "$len" -i "$VURL" \
-              -map 0:v:0 -map 0:a:0? -c copy -avoid_negative_ts make_zero raw.mp4
-          fi
-          ls -lh raw.mp4
-
-          ffmpeg -y -loglevel warning -i raw.mp4 \
+          # ponytail: input-seek on local file; fMP4 HLS pe copy-slice corrupt file deta hai
+          ffmpeg -y -loglevel warning -ss "$s" -t "$len" -i "$src" \
             -c:v libx265 -crf ${{ inputs.crf }} -preset ${{ inputs.preset }} -tag:v hvc1 \
             -c:a aac -b:a 128k \
             -fflags +genpts -reset_timestamps 1 \
