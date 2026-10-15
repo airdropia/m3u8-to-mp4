@@ -1,12 +1,11 @@
-name: telegram to mp4 (h265, no local machine)
+name: TG mp4 to mp4 (h265)
 
-# Poora kaam GitHub runner pe: tdl se authenticated Telegram media download,
-# source ko release-asset bana ke convert-fast (parallel h265 + zip) ko call.
-# Local machine pe kuch bhi download/encode nahi hota.
+# TG MP4 -> h265 zip. Source: t.me post link (already merged mp4 hota hai).
 #
-# Login: pehli baar QR scan (Telegram app/64gram: Settings > Devices > Link Desktop Device),
-# uske baad tdl ka session Actions cache me chala jata hai - aage har run me login hi nahi
-# chahiye. Session expire/invalid ho jaye to step khud QR mode me gir jata hai.
+# Session cache me hai (tdl-session-v1) - login/QR har run me nahi lagta.
+# Cache miss ho to step khud QR mode me girta hai: live log me QR aata hai,
+# jise runner se PNG banake release pe upload kiya jata hai (ASCII QR browser me scan nahi hota).
+# Phone: Settings > Devices > Link Desktop Device se scan karo.
 
 on:
   workflow_dispatch:
@@ -20,9 +19,9 @@ on:
         required: false
         default: 'auto'
       transcode:
-        description: 'no = as-is link (Telegram video pehle se compressed/merged hai) | h265 = parallel h265 encode'
+        description: 'h265 = parallel h265 encode + zip (default) | no = as-is raw mp4 link'
         required: false
-        default: 'no'
+        default: 'h265'
       chunks:
         description: 'Parallel encode chunks (jitne chunks, utne jobs)'
         required: false

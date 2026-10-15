@@ -71,10 +71,10 @@ jobs:
           # direct mp4 (e.g. GitHub release asset) ho to yt-dlp duration na de paya -
           # tab ffprobe se nikaalte hain (HLS/m3u8 ke liye yt-dlp hi kaam karta hai)
           if [ -z "$dur" ] || [ "$dur" = "NA" ] || [ "$dur" = "None" ]; then
-            echo "yt-dlp duration nahi mila, ffprobe try kar rahe hain..."
-            tmp="probe_src.$(echo "${{ inputs.url }}" | sed -E 's/.*(\.[a-z0-9]{2,4})(\?.*)?/\1/')"
-            yt-dlp --no-warnings --retries 5 -o "$tmp" "${{ inputs.url }}" || exit 1
-            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$tmp")
+            echo "yt-dlp duration nahi mila, poora source download karke ffprobe se dekh rahe hain..."
+            yt-dlp --no-warnings --retries 5 -o "probe_src.%(ext)s" "${{ inputs.url }}" || exit 1
+            p=$(find . -maxdepth 1 -name 'probe_src.*' -type f | head -1)
+            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$p")
           fi
           if [ -z "$dur" ] || [ "$dur" = "N/A" ]; then
             echo "::error::duration probe failed for input url (got: '$dur')"
@@ -200,8 +200,14 @@ jobs:
           a=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
           d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4)
           echo "video=$v audio=${a:-NONE} duration=$d (source=$SRC_DURATION)"
-          [ -n "$v" ] || { echo "::error::no video track"; exit 1; }
-          if [ -z "$a" ] && [ -z "$AUDIO_URL" ]; then
+          if [ -z "$v" ] && [ -z "$a" ]; then
+            echo "::error::output me koi track hi nahi - source ya encode fail hua"
+            exit 1
+          fi
+          # audio-only source (mp4a playlist) valid hai - video track na ho to skip
+          if [ -z "$v" ]; then
+            echo "NOTE: source video-only tha, audio-only output bana hai"
+          elif [ -z "$a" ] && [ -z "$AUDIO_URL" ]; then
             echo "::error::source me audio track nahi mila - video-only output ban raha hai"
             exit 1
           fi
