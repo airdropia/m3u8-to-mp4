@@ -71,13 +71,16 @@ jobs:
           cat > render.py <<'PY'
           import re, sys
           from PIL import Image
-          src = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
-          src = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', src)
-          HALF = {'█': (1, 1), '▀': (1, 0), '▄': (0, 1), ' ': (0, 0)}
+          raw = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+          # cursor-up/down sequences ke baad QR rows bina newline ke chipakte hain -
+          # unhe newline me badlo taaki har QR row apni line ho
+          raw = re.sub(r'\x1b\[[0-9;]*[ABCD]', '\n', raw)
+          src = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', raw)
+          HALF = set('█▀▄▔▁ ')
           runs, cur = [], []
-          for ln in src.split('\n'):
-              ln = ln.rstrip('\r')
-              if ln and len(ln) >= 20 and all(c in HALF for c in ln):
+          for ln in src.replace('\r', '\n').split('\n'):
+              ln = ''.join(c for c in ln if c in HALF)
+              if len(ln) >= 20:
                   cur.append(ln)
               elif cur:
                   runs.append(cur); cur = []
@@ -85,11 +88,11 @@ jobs:
               runs.append(cur)
           if not runs:
               sys.exit(1)
-          qr = max(runs, key=len)
+          qr = max(runs, key=lambda r: (len(r[0]), len(r)))
           w = max(len(l) for l in qr)
           rows = []
           for l in qr:
-              t, b = zip(*[HALF.get(c, (0, 0)) for c in l.ljust(w)])
+              t, b = zip(*[{'█': (1, 1), '▀': (1, 0), '▄': (0, 1), '▔': (1, 0), '▁': (0, 1)}.get(c, (0, 0)) for c in l.ljust(w)])
               rows.append(list(t)); rows.append(list(b))
           pad, S = 4, 8
           W, H = w + 2 * pad, len(rows) + 2 * pad
