@@ -65,8 +65,16 @@ jobs:
       - name: Probe duration and build chunk matrix
         id: plan
         run: |
-          dur=$(yt-dlp --no-warnings --print duration "${{ inputs.url }}")
+          dur=$(yt-dlp --no-warnings --print duration "${{ inputs.url }}" 2>/dev/null)
+          # direct mp4 (e.g. GitHub release asset) ho to yt-dlp duration na de paya -
+          # tab ffprobe se nikaalte hain (HLS/m3u8 ke liye yt-dlp hi kaam karta hai)
           if [ -z "$dur" ] || [ "$dur" = "NA" ] || [ "$dur" = "None" ]; then
+            echo "yt-dlp duration nahi mila, ffprobe try kar rahe hain..."
+            tmp="probe_src.$(echo "${{ inputs.url }}" | sed -E 's/.*(\.[a-z0-9]{2,4})(\?.*)?/\1/')"
+            yt-dlp --no-warnings --retries 5 -o "$tmp" "${{ inputs.url }}" || exit 1
+            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$tmp")
+          fi
+          if [ -z "$dur" ] || [ "$dur" = "N/A" ]; then
             echo "::error::duration probe failed for input url (got: '$dur')"
             exit 1
           fi
