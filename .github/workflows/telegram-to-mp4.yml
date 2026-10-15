@@ -102,26 +102,28 @@ jobs:
           PY
 
           rm -f qr.txt qr.png
-          # tdl ko TTY chahiye (survey/qr render), background me script se pseudo-TTY do
-          script -qec "tdl login -T qr" /dev/null > qr.txt 2>&1 &
-          TDL_PID=$!
           TAG="tg-qr-$(date +%s)"
           LAST=""
-          echo "QR image live ho raha hai - phone me browser me kholo, phir Telegram: Settings > Devices > Link Desktop Device se us page ka QR scan karo."
-          for _ in $(seq 1 58); do
-            kill -0 "$TDL_PID" 2>/dev/null || break
-            if [ -s qr.txt ] && python3 render.py qr.txt qr.png 2>/dev/null; then
-              SUM=$(md5sum qr.png | cut -d' ' -f1)
-              if [ "$SUM" != "$LAST" ]; then
-                LAST="$SUM"
-                gh release create "$TAG" qr.png --title "Telegram login QR" --notes "Ye image har ~30s refresh hoti hai. Is page ko phone me kholo aur QR scan karo." >/dev/null 2>&1 \
-                  || gh release upload "$TAG" qr.png --clobber >/dev/null 2>&1
-                echo "QR: https://github.com/${{ github.repository }}/releases/download/$TAG/qr.png"
+          # watcher background: ASCII QR -> PNG -> release asset (browser me saaf image)
+          (
+            for _ in $(seq 1 58); do
+              if [ -s qr.txt ] && python3 render.py qr.txt qr.png 2>/dev/null; then
+                SUM=$(md5sum qr.png | cut -d' ' -f1)
+                if [ "$SUM" != "$LAST" ]; then
+                  LAST="$SUM"
+                  gh release create "$TAG" qr.png --title "Telegram login QR" --notes "Ye image har ~30s refresh hoti hai. Phone me ye page kholo, phir Telegram: Settings > Devices > Link Desktop Device se is page ka QR scan karo." >/dev/null 2>&1 \
+                    || gh release upload "$TAG" qr.png --clobber >/dev/null 2>&1
+                  echo "QR: https://github.com/${{ github.repository }}/releases/download/$TAG/qr.png"
+                fi
               fi
-            fi
-            sleep 5
-          done
-          wait "$TDL_PID" || true
+              sleep 5
+            done
+          ) &
+          WATCH_PID=$!
+          echo "QR image live ho rahi hai - phone me browser me kholo, phir Telegram: Settings > Devices > Link Desktop Device se us page ka QR scan karo."
+          # tdl foreground me chalta hai (survey TTY maangta hai - script pseudo-TTY deta hai)
+          script -qec "tdl login -T qr" /dev/null | tee qr.txt
+          kill "$WATCH_PID" 2>/dev/null || true
           tdl chat ls >/dev/null 2>&1 || { echo "::error::QR scan nahi hua - run dobara chalao"; exit 1; }
           gh release delete "$TAG" -y >/dev/null 2>&1 || true
           echo "did_login=true" >> "$GITHUB_OUTPUT"
