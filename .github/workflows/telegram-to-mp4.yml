@@ -64,7 +64,7 @@ jobs:
             echo "did_login=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          pip install --quiet --disable-pip-version-check pillow >/dev/null 2>&1
+          sudo apt-get install -y -qq python3-pil >/dev/null
 
           # tdl ASCII QR (half-block chars) ko real PNG me convert karte hain,
           # kyunki Actions live log half-block QR ko theek nahi dikhata - phone scanner fail hota hai.
@@ -88,7 +88,15 @@ jobs:
               runs.append(cur)
           if not runs:
               sys.exit(1)
-          qr = max(runs, key=lambda r: (len(r[0]), len(r)))
+          # tdl har ~30s QR redraw karta hai - ek hi run me sab frames chipke aate hain.
+          # Frame height (char rows) ~= width (square QR), to last complete frame lo.
+          cands = [r for r in runs if len(r) >= 10 and len(r[0]) >= 25]
+          if not cands:
+              sys.exit(1)
+          run_ = max(cands, key=len)
+          W = len(run_[0])
+          frames = len(run_) // W
+          qr = run_[(frames - 1) * W: frames * W] if frames >= 1 else run_
           w = max(len(l) for l in qr)
           rows = []
           for l in qr:
