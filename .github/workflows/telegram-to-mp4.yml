@@ -167,11 +167,11 @@ jobs:
             echo "::error::is link pe koi media nahi mila - post shayad text-only/link-preview hai"
             exit 1
           fi
-          asset="source$(echo "$f" | grep -oE '\.[a-z0-9]{2,4}$')"
           TAG="tg-src-$(date +%s)"
-          gh release create "$TAG" "$f#$asset" --title "Telegram source $TAG" \
+          gh release create "$TAG" "$f" --title "Telegram source $TAG" \
             --notes "Raw download for ${{ inputs.link }} (no re-encode)."
-          URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$asset"
+          # asset ka asli browser URL use karo (space/naam quoting issues se bachne ke liye)
+          URL=$(gh api "repos/${{ github.repository }}/releases/tags/$TAG" -q '.assets[0].browser_download_url')
           echo "url=$URL" >> "$GITHUB_OUTPUT"
           echo "SOURCE (unedited): $URL" >> "$GITHUB_STEP_SUMMARY"
 
