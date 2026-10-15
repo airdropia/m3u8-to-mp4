@@ -57,8 +57,10 @@ jobs:
       chunks: ${{ steps.plan.outputs.chunks }}
       duration: ${{ steps.plan.outputs.duration }}
     steps:
-      - name: Install yt-dlp
+      - name: Install ffmpeg + yt-dlp
         run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg >/dev/null
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
 
