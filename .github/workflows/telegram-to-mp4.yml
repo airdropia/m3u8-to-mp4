@@ -4,10 +4,9 @@ name: telegram to mp4 (h265, no local machine)
 # source ko release-asset bana ke convert-fast (parallel h265 + zip) ko call.
 # Local machine pe kuch bhi download/encode nahi hota.
 #
-# Setup (ek baar): repo secrets me TG_PHONE aur TG_LOGIN_CODE set karo.
-#   TG_PHONE       = country code ke saath, e.g. 989xxxxxxxxx
-#   TG_LOGIN_CODE  = Telegram app -> Settings -> Device -> Link Desktop Account se mila
-#                    5-digit code (valid ~3 min). Dispatch se thodi der pehle set karo.
+# Login: default QR. Run start hone ke baad QR live log me aata hai - Telegram app
+# (Settings > Devices > Link Desktop Device) se scan karo, job khud aage badh jata hai.
+# Mode=code tabhi chahiye jab QR na ho (ya 2FA ho): repo secrets TG_PHONE + TG_LOGIN_CODE.
 
 on:
   workflow_dispatch:
@@ -16,6 +15,10 @@ on:
         description: 'Telegram link (t.me/channel/post, ya channel/123-140 range)'
         required: true
         default: 'https://t.me/MehmatFatihUrdu/576'
+      login:
+        description: 'qr = live log me QR scan karo (recommended) | code = phone+5-digit code'
+        required: false
+        default: 'qr'
       chunks:
         description: 'Parallel encode chunks (jitne chunks, utne jobs)'
         required: false
@@ -44,18 +47,24 @@ jobs:
           curl -sL https://github.com/iyear/tdl/releases/latest/download/tdl_Linux_64bit.tar.gz | tar xz -C /usr/local/bin
           tdl version
 
-      - name: Login (phone + code)
+      - name: Login (QR scan, ya phone + code)
         env:
+          MODE: ${{ inputs.login }}
           PHONE: ${{ secrets.TG_PHONE }}
           CODE: ${{ secrets.TG_LOGIN_CODE }}
         run: |
-          if [ -z "$PHONE" ] || [ -z "$CODE" ]; then
-            echo "::error::repo secrets TG_PHONE aur TG_LOGIN_CODE set karo (Settings > Secrets > Actions)"
-            exit 1
+          if [ "$MODE" = "code" ]; then
+            if [ -z "$PHONE" ] || [ -z "$CODE" ]; then
+              echo "::error::code mode me repo secrets TG_PHONE + TG_LOGIN_CODE chahiye"
+              exit 1
+            fi
+            # tdl ka survey prompt TTY maangta hai; script se pseudo-TTY milta hai
+            printf '%s\n%s\n' "$PHONE" "$CODE" | script -qec "tdl login -T code" /dev/null
+          else
+            echo "QR log me aayega - Telegram app: Settings > Devices > Link Desktop Device se scan karo (~60s me expire hota hai)"
+            echo "Job ruka rahega jab tak scan na ho - Actions page ka live log dekhte rehna."
+            timeout --signal=INT 300 tdl login -T qr
           fi
-          # tdl ka survey prompt TTY maangta hai; GitHub runner pe TTY nahi hota.
-          # script se pseudo-TTY milta hai aur piped input usme chala jata hai.
-          printf '%s\n%s\n' "$PHONE" "$CODE" | script -qec "tdl login -T code" /dev/null
           tdl chat ls
           echo "login ok"
 
