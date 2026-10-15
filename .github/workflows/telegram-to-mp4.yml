@@ -57,16 +57,72 @@ jobs:
         id: login
         env:
           MODE: ${{ inputs.login }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ "$MODE" != "qr" ] && tdl chat ls >/dev/null 2>&1; then
             echo "cached session se login ok - kuch karne ki zarurat nahi"
             echo "did_login=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "QR log me aayega - Telegram app ya 64gram: Settings > Devices > Link Desktop Device se scan karo (~60s me expire)"
-          echo "Job ruka rahega jab tak scan na ho - Actions page ka live log dekhte rehna."
-          timeout --signal=INT 300 tdl login -T qr
+          pip install --quiet --disable-pip-version-check pillow >/dev/null 2>&1
+
+          # tdl ASCII QR (half-block chars) ko real PNG me convert karte hain,
+          # kyunki Actions live log half-block QR ko theek nahi dikhata - phone scanner fail hota hai.
+          cat > render.py <<'PY'
+          import re, sys
+          from PIL import Image
+          src = open(sys.argv[1], encoding='utf-8', errors='ignore').read()
+          src = re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', src)
+          HALF = {'█': (1, 1), '▀': (1, 0), '▄': (0, 1), ' ': (0, 0)}
+          runs, cur = [], []
+          for ln in src.split('\n'):
+              ln = ln.rstrip('\r')
+              if ln and len(ln) >= 20 and all(c in HALF for c in ln):
+                  cur.append(ln)
+              elif cur:
+                  runs.append(cur); cur = []
+          if cur:
+              runs.append(cur)
+          if not runs:
+              sys.exit(1)
+          qr = max(runs, key=len)
+          w = max(len(l) for l in qr)
+          rows = []
+          for l in qr:
+              t, b = zip(*[HALF.get(c, (0, 0)) for c in l.ljust(w)])
+              rows.append(list(t)); rows.append(list(b))
+          pad, S = 4, 8
+          W, H = w + 2 * pad, len(rows) + 2 * pad
+          img = Image.new('L', (W, H), 255)
+          for y, row in enumerate(rows):
+              for x, v in enumerate(row):
+                  if v:
+                      img.putpixel((x + pad, y + pad), 0)
+          img.resize((W * S, H * S), Image.NEAREST).save(sys.argv[2])
+          PY
+
+          rm -f qr.txt qr.png
+          tdl login -T qr > qr.txt 2>&1 &
+          TDL_PID=$!
+          TAG="tg-qr-$(date +%s)"
+          LAST=""
+          echo "QR image live ho raha hai - phone me browser me kholo, phir Telegram: Settings > Devices > Link Desktop Device se us page ka QR scan karo."
+          for _ in $(seq 1 58); do
+            kill -0 "$TDL_PID" 2>/dev/null || break
+            if [ -s qr.txt ] && python3 render.py qr.txt qr.png 2>/dev/null; then
+              SUM=$(md5sum qr.png | cut -d' ' -f1)
+              if [ "$SUM" != "$LAST" ]; then
+                LAST="$SUM"
+                gh release create "$TAG" qr.png --title "Telegram login QR" --notes "Ye image har ~30s refresh hoti hai. Is page ko phone me kholo aur QR scan karo." >/dev/null 2>&1 \
+                  || gh release upload "$TAG" qr.png --clobber >/dev/null 2>&1
+                echo "QR: https://github.com/${{ github.repository }}/releases/download/$TAG/qr.png"
+              fi
+            fi
+            sleep 5
+          done
+          wait "$TDL_PID" || true
           tdl chat ls >/dev/null 2>&1 || { echo "::error::QR scan nahi hua - run dobara chalao"; exit 1; }
+          gh release delete "$TAG" -y >/dev/null 2>&1 || true
           echo "did_login=true" >> "$GITHUB_OUTPUT"
           echo "login ok"
 
