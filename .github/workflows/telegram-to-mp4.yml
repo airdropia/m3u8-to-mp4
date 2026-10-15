@@ -19,6 +19,10 @@ on:
         description: 'auto = cache se session (recommended) | qr = hamesha QR scan'
         required: false
         default: 'auto'
+      transcode:
+        description: 'no = as-is link (Telegram video pehle se compressed/merged hai) | h265 = parallel h265 encode'
+        required: false
+        default: 'no'
       chunks:
         description: 'Parallel encode chunks (jitne chunks, utne jobs)'
         required: false
@@ -177,6 +181,7 @@ jobs:
 
   convert:
     needs: fetch
+    if: inputs.transcode == 'h265'
     uses: ./.github/workflows/convert-fast.yml
     with:
       url: ${{ needs.fetch.outputs.url }}
