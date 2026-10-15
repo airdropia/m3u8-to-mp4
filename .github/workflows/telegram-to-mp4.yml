@@ -4,9 +4,9 @@ name: telegram to mp4 (h265, no local machine)
 # source ko release-asset bana ke convert-fast (parallel h265 + zip) ko call.
 # Local machine pe kuch bhi download/encode nahi hota.
 #
-# Login: default QR. Run start hone ke baad QR live log me aata hai - Telegram app
-# (Settings > Devices > Link Desktop Device) se scan karo, job khud aage badh jata hai.
-# Mode=code tabhi chahiye jab QR na ho (ya 2FA ho): repo secrets TG_PHONE + TG_LOGIN_CODE.
+# Login: pehli baar QR scan (Telegram app/64gram: Settings > Devices > Link Desktop Device),
+# uske baad tdl ka session Actions cache me chala jata hai - aage har run me login hi nahi
+# chahiye. Session expire/invalid ho jaye to step khud QR mode me gir jata hai.
 
 on:
   workflow_dispatch:
@@ -16,9 +16,9 @@ on:
         required: true
         default: 'https://t.me/MehmatFatihUrdu/576'
       login:
-        description: 'qr = live log me QR scan karo (recommended) | code = phone+5-digit code'
+        description: 'auto = cache se session (recommended) | qr = hamesha QR scan'
         required: false
-        default: 'qr'
+        default: 'auto'
       chunks:
         description: 'Parallel encode chunks (jitne chunks, utne jobs)'
         required: false
@@ -47,26 +47,35 @@ jobs:
           curl -sL https://github.com/iyear/tdl/releases/latest/download/tdl_Linux_64bit.tar.gz | tar xz -C /usr/local/bin
           tdl version
 
-      - name: Login (QR scan, ya phone + code)
+      - name: Restore tdl session (cache)
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.tdl
+          key: tdl-session-v1
+
+      - name: Login (QR scan)
+        id: login
         env:
           MODE: ${{ inputs.login }}
-          PHONE: ${{ secrets.TG_PHONE }}
-          CODE: ${{ secrets.TG_LOGIN_CODE }}
         run: |
-          if [ "$MODE" = "code" ]; then
-            if [ -z "$PHONE" ] || [ -z "$CODE" ]; then
-              echo "::error::code mode me repo secrets TG_PHONE + TG_LOGIN_CODE chahiye"
-              exit 1
-            fi
-            # tdl ka survey prompt TTY maangta hai; script se pseudo-TTY milta hai
-            printf '%s\n%s\n' "$PHONE" "$CODE" | script -qec "tdl login -T code" /dev/null
-          else
-            echo "QR log me aayega - Telegram app: Settings > Devices > Link Desktop Device se scan karo (~60s me expire hota hai)"
-            echo "Job ruka rahega jab tak scan na ho - Actions page ka live log dekhte rehna."
-            timeout --signal=INT 300 tdl login -T qr
+          if [ "$MODE" != "qr" ] && tdl chat ls >/dev/null 2>&1; then
+            echo "cached session se login ok - kuch karne ki zarurat nahi"
+            echo "did_login=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
-          tdl chat ls
+          echo "QR log me aayega - Telegram app ya 64gram: Settings > Devices > Link Desktop Device se scan karo (~60s me expire)"
+          echo "Job ruka rahega jab tak scan na ho - Actions page ka live log dekhte rehna."
+          timeout --signal=INT 300 tdl login -T qr
+          tdl chat ls >/dev/null 2>&1 || { echo "::error::QR scan nahi hua - run dobara chalao"; exit 1; }
+          echo "did_login=true" >> "$GITHUB_OUTPUT"
           echo "login ok"
+
+      - name: Save tdl session (cache)
+        if: steps.login.outputs.did_login == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.tdl
+          key: tdl-session-v1
 
       - name: Download media
         run: |
