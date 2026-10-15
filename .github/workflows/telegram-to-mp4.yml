@@ -102,7 +102,8 @@ jobs:
           PY
 
           rm -f qr.txt qr.png
-          tdl login -T qr > qr.txt 2>&1 &
+          # tdl ko TTY chahiye (survey/qr render), background me script se pseudo-TTY do
+          script -qec "tdl login -T qr" /dev/null > qr.txt 2>&1 &
           TDL_PID=$!
           TAG="tg-qr-$(date +%s)"
           LAST=""
