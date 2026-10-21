@@ -181,7 +181,7 @@ jobs:
   convert:
     needs: fetch
     if: inputs.transcode == 'h265'
-    uses: ./.github/workflows/convert-fast.yml
+    uses: ./.github/workflows/m3u8-to-mp4.yml
     with:
       url: ${{ needs.fetch.outputs.url }}
       chunks: ${{ inputs.chunks }}
