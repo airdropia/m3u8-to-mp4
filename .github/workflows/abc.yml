@@ -2,6 +2,10 @@ name: abc
 on:
   workflow_dispatch:
     inputs:
+      audio_url:
+        description: "audio url"
+        required: false
+        default: ""
       url:
         description: "test url"
         required: true
