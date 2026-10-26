@@ -30,7 +30,17 @@ jobs:
           ls -lh output.*
       - name: Check size and decide
         id: decide
-        run: echo ok
+        run: |
+          SIZE=$(stat -c%s output.mp4)
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "File size: $SIZE bytes ($(( SIZE / 1024 / 1024 )) MB)"
+          if [ "$SIZE" -ge 2147483648 ]; then
+            echo "mode=encode" >> "$GITHUB_OUTPUT"
+            echo "File > 2GB - light h265 compression lagega"
+          else
+            echo "mode=copy" >> "$GITHUB_OUTPUT"
+            echo "File < 2GB - stream copy (no encode), fast"
+          fi
       - name: Light h265 (only if >2GB)
         if: steps.decide.outputs.mode == 'encode'
         run: echo ok
