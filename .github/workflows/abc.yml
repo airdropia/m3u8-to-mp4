@@ -6,7 +6,7 @@ on:
       url:
         description: 'm3u8 / HLS / tweet URL (master playlist with audio)'
         required: true
-        default: 'https://video.twimg.com/amplify_video/2114470150699130880/pl/E8b928cjQN2ypYEx.m3u8?tag=29'
+        default: 'test'
       audio_url:
         description: 'Audio m3u8 URL (optional - video-only source ke liye)'
         required: false
