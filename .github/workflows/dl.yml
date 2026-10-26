@@ -6,6 +6,10 @@ on:
         description: "test url"
         required: true
         default: "https://example.com/test.m3u8?tag=29"
+      audio_url:
+        description: "audio url"
+        required: false
+        default: ''
 jobs:
   hello:
     runs-on: ubuntu-latest
