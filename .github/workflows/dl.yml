@@ -27,12 +27,8 @@ jobs:
         if: steps.decide.outputs.mode == 'encode'
         run: echo ok
       - name: Extract audio (if exists)
+        run: echo ok
+      - name: Package zip
         run: |
-          has_audio=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
-          if [ -n "$has_audio" ]; then
-            ffmpeg -y -loglevel error -i output.mp4 -vn -c:a copy audio.m4a
-            echo "audio: $has_audio -> audio.m4a"
-            ls -lh audio.m4a
-          else
-            echo "NO AUDIO - skip"
-          fi
+          python3 -m zipfile -c video.zip output.mp4
+          ls -lh video.zip
