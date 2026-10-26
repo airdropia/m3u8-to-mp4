@@ -22,12 +22,11 @@ jobs:
         run: echo ok
       - name: Check size and decide
         id: decide
+        run: echo ok
+      - name: Light h265 (only if >2GB)
+        if: steps.decide.outputs.mode == 'encode'
         run: |
-          SIZE=$(stat -c%s output.mp4)
-          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
-          echo "File size: $SIZE bytes"
-          if [ "$SIZE" -ge 2147483648 ]; then
-            echo "mode=encode" >> "$GITHUB_OUTPUT"
-          else
-            echo "mode=copy" >> "$GITHUB_OUTPUT"
-          fi
+          ffmpeg -y -loglevel warning -i output.mp4 \
+            -c:v libx265 -crf 28 -preset ultrafast -tag:v hvc1 \
+            -c:a aac -b:a 128k \
+            output_h265.mp4
