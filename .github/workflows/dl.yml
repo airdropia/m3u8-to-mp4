@@ -1,0 +1,14 @@
+name: dl
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        required: true
+        type: string
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "URL=$URL"
+        env:
+          URL: ${{ inputs.url }}
