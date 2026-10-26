@@ -19,31 +19,20 @@ jobs:
       - name: Install
         run: echo ok
       - name: Download + merge (stream copy, no encode)
-        run: |
-          yt-dlp \
-            --concurrent-fragments 16 \
-            --retries 10 \
-            -f "bestvideo+bestaudio/best" \
-            --merge-output-format mp4 \
-            -o "output.%(ext)s" \
-            "${{ inputs.url }}"
-          ls -lh output.*
+        run: echo ok
       - name: Check size and decide
         id: decide
-        run: |
-          SIZE=$(stat -c%s output.mp4)
-          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
-          echo "File size: $SIZE bytes ($(( SIZE / 1024 / 1024 )) MB)"
-          if [ "$SIZE" -ge 2147483648 ]; then
-            echo "mode=encode" >> "$GITHUB_OUTPUT"
-            echo "File > 2GB - light h265 compression lagega"
-          else
-            echo "mode=copy" >> "$GITHUB_OUTPUT"
-            echo "File < 2GB - stream copy (no encode), fast"
-          fi
+        run: echo ok
       - name: Light h265 (only if >2GB)
         if: steps.decide.outputs.mode == 'encode'
-        run: echo ok
+        run: |
+          ffmpeg -y -loglevel warning -i output.mp4 \
+            -c:v libx265 -crf 28 -preset ultrafast -tag:v hvc1 \
+            -c:a aac -b:a 128k \
+            output_h265.mp4
+          mv output_h265.mp4 output.mp4
+          ls -lh output.mp4
+          echo "After encode: $(( $(stat -c%s output.mp4) / 1024 / 1024 )) MB"
       - name: Extract audio (if exists)
         run: echo ok
       - name: Package zip
