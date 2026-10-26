@@ -1,4 +1,4 @@
-name: m3u8 to mp4 (fast parallel h265)
+name: m3u8 to mp4 (smart: merge if <2GB, else light h265)
 
 on:
   workflow_dispatch:
@@ -6,156 +6,19 @@ on:
       url:
         description: 'm3u8 / HLS / tweet URL (master playlist with audio)'
         required: true
-        default: 'https://video.twimg.com/amplify_video/2109508195903262720/pl/9YdWcnNCBN170WkD.m3u8?tag=29'
+        default: 'https://video.twimg.com/amplify_video/2114470150699130880/pl/E8b928cjQN2ypYEx.m3u8?tag=29'
       audio_url:
         description: 'Audio m3u8 URL (optional - video-only source ke liye)'
         required: false
         default: ''
-      chunks:
-        description: 'Parallel chunks (jitne chunks, utne jobs)'
-        required: false
-        default: '8'
-      crf:
-        description: 'h265 CRF (chhota number = better quality/bigger)'
-        required: false
-        default: '28'
-      preset:
-        description: 'x265 preset (ultrafast fastest, veryfast/medium slower+smaller)'
-        required: false
-        default: 'ultrafast'
-  # telegram-to-mp4.yml isse call karta hai (source = telegram se download hua mp4)
-  workflow_call:
-    inputs:
-      url:
-        description: 'Source video URL (direct mp4 / m3u8 master)'
-        required: true
-        type: string
-      audio_url:
-        required: false
-        type: string
-        default: ''
-      chunks:
-        required: false
-        type: string
-        default: '8'
-      crf:
-        required: false
-        type: string
-        default: '28'
-      preset:
-        required: false
-        type: string
-        default: 'ultrafast'
 
 permissions:
   contents: write
 
 jobs:
-  probe:
+  smart:
     runs-on: ubuntu-latest
-    outputs:
-      chunks: ${{ steps.plan.outputs.chunks }}
-      duration: ${{ steps.plan.outputs.duration }}
-    steps:
-      - name: Install ffmpeg + yt-dlp
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg >/dev/null
-          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod +x /usr/local/bin/yt-dlp
-
-      - name: Probe duration and build chunk matrix
-        id: plan
-        run: |
-          dur=$(yt-dlp --no-warnings --print duration "${{ inputs.url }}" 2>/dev/null)
-          # direct mp4 (e.g. GitHub release asset) ho to yt-dlp duration na de paya -
-          # tab ffprobe se nikaalte hain (HLS/m3u8 ke liye yt-dlp hi kaam karta hai)
-          if [ -z "$dur" ] || [ "$dur" = "NA" ] || [ "$dur" = "None" ]; then
-            echo "yt-dlp duration nahi mila, poora source download karke ffprobe se dekh rahe hain..."
-            yt-dlp --no-warnings --retries 5 -o "probe_src.%(ext)s" "${{ inputs.url }}" || exit 1
-            p=$(find . -maxdepth 1 -name 'probe_src.*' -type f | head -1)
-            dur=$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$p")
-          fi
-          if [ -z "$dur" ] || [ "$dur" = "N/A" ]; then
-            echo "::error::duration probe failed for input url (got: '$dur')"
-            exit 1
-          fi
-          echo "duration=$dur" >> "$GITHUB_OUTPUT"
-          python3 -c "
-          import json
-          d = float('$dur')
-          n = max(1, int('${{ inputs.chunks }}'))
-          w = max(1, len(str(n - 1)))
-          plan = [{'i': i, 'name': str(i).zfill(w),
-                   's': round(i * d / n, 3),
-                   'e': round((i + 1) * d / n if i < n - 1 else d, 3)} for i in range(n)]
-          print(json.dumps(plan))
-          " > plan.json
-          echo "chunks=$(cat plan.json)" >> "$GITHUB_OUTPUT"
-          echo "duration: $dur s -> $(cat plan.json)"
-
-  encode:
-    needs: probe
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    strategy:
-      fail-fast: false
-      matrix:
-        chunk: ${{ fromJSON(needs.probe.outputs.chunks) }}
-    steps:
-      - name: Install ffmpeg + yt-dlp
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg >/dev/null
-          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod +x /usr/local/bin/yt-dlp
-
-      - name: Download source (video+audio merged)
-        run: |
-          # master playlist se best video + best audio download hoke ek mp4 me merge hote hai
-          # (yt-dlp --merge-output-format mp4) - isliye chunk encode me dono tracks available hain
-          yt-dlp \
-            --concurrent-fragments 16 \
-            --retries 10 \
-            -f "bestvideo+bestaudio/best" \
-            --merge-output-format mp4 \
-            -o "src.%(ext)s" \
-            "${{ inputs.url }}"
-          find . -maxdepth 1 -name 'src.*' -type f -exec ls -lh {} \;
-          src=$(find . -maxdepth 1 -name 'src.*' -type f | head -1)
-          ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 "$src"
-
-      - name: Encode chunk (h265 + aac, dono tracks ek file me)
-        run: |
-          src=$(find . -maxdepth 1 -name 'src.*' -type f | head -1)
-          s=${{ matrix.chunk.s }}
-          len=$(python3 -c "print(round(${{ matrix.chunk.e }} - $s, 3))")
-
-          # ponytail: input-seek on local file; fMP4 HLS pe copy-slice corrupt file deta hai
-          # aresample: har chunk me audio resample hota hai -> concat pe seamless join
-          ffmpeg -y -loglevel warning -ss "$s" -t "$len" -i "$src" \
-            -c:v libx265 -crf ${{ inputs.crf }} -preset ${{ inputs.preset }} -tag:v hvc1 \
-            -c:a aac -b:a 128k -af aresample=async=1:first_pts=0 \
-            -fflags +genpts -reset_timestamps 1 -avoid_negative_ts make_zero \
-            "chunk_${{ matrix.chunk.name }}.mp4"
-
-          ls -lh "chunk_${{ matrix.chunk.name }}.mp4"
-          ffprobe -v error -show_entries format=duration -of csv=p=0 "chunk_${{ matrix.chunk.name }}.mp4"
-
-      - name: Upload chunk
-        uses: actions/upload-artifact@v4
-        with:
-          name: chunk-${{ matrix.chunk.name }}
-          path: chunk_${{ matrix.chunk.name }}.mp4
-          if-no-files-found: error
-
-  merge:
-    needs: [probe, encode]
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
-    env:
-      SRC_DURATION: ${{ needs.probe.outputs.duration }}
-      AUDIO_URL: ${{ inputs.audio_url }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
 
@@ -165,70 +28,53 @@ jobs:
           sudo apt-get install -y -qq ffmpeg >/dev/null
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
+          yt-dlp --version
 
-      - name: Download all chunks
-        uses: actions/download-artifact@v4
-        with:
-          pattern: chunk-*
-          merge-multiple: true
-
-      - name: Concat chunks
+      - name: Download + merge (stream copy, no encode)
         run: |
-          ls -lh chunk_*.mp4
-          for f in $(ls chunk_*.mp4 | sort); do echo "file '$PWD/$f'"; done > list.txt
-          cat list.txt
-          # har chunk me video+audio dono hain, isliye concat se hi single A+V file ban jata hai
-          ffmpeg -y -loglevel warning -f concat -safe 0 -i list.txt -c copy merged.mp4
-          ls -lh merged.mp4
+          yt-dlp \
+            --concurrent-fragments 16 \
+            --retries 10 \
+            -f "bestvideo+bestaudio/best" \
+            --merge-output-format mp4 \
+            -o "output.%(ext)s" \
+            "${{ inputs.url }}"
+          ls -lh output.*
 
-          if [ -n "$AUDIO_URL" ]; then
-            # video-only source + alag audio_url -> yahan audio attach (aac me encode, copy nahi,
-            # kyunki opus/webm audio ko mp4 me -c copy se nahi daal sakte)
-            yt-dlp --retries 10 -f "bestaudio/best" -o "raw_audio.%(ext)s" "$AUDIO_URL"
-            asrc=$(find . -maxdepth 1 -name 'raw_audio.*' -type f | head -1)
-            ffmpeg -y -loglevel warning -i merged.mp4 -i "$asrc" \
-              -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -b:a 128k -shortest output.mp4
+      - name: Check size and decide
+        id: decide
+        run: |
+          SIZE=$(stat -c%s output.mp4)
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "File size: $SIZE bytes ($(( SIZE / 1024 / 1024 )) MB)"
+          if [ "$SIZE" -ge 2147483648 ]; then
+            echo "mode=encode" >> "$GITHUB_OUTPUT"
+            echo "File > 2GB - light h265 compression lagega"
           else
-            mv merged.mp4 output.mp4
+            echo "mode=copy" >> "$GITHUB_OUTPUT"
+            echo "File < 2GB - stream copy (no encode), fast"
           fi
 
-          ls -lh output.mp4
-
-      - name: Verify output (dono tracks + duration)
+      - name: Light h265 (only if >2GB)
+        if: steps.decide.outputs.mode == 'encode'
         run: |
-          v=$(ffprobe -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
-          a=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
-          d=$(ffprobe -v error -show_entries format=duration -of csv=p=0 output.mp4)
-          echo "video=$v audio=${a:-NONE} duration=$d (source=$SRC_DURATION)"
-          if [ -z "$v" ] && [ -z "$a" ]; then
-            echo "::error::output me koi track hi nahi - source ya encode fail hua"
-            exit 1
-          fi
-          # audio-only source (mp4a playlist) valid hai - video track na ho to skip
-          if [ -z "$v" ]; then
-            echo "NOTE: source video-only tha, audio-only output bana hai"
-          elif [ -z "$a" ] && [ -z "$AUDIO_URL" ]; then
-            echo "::error::source me audio track nahi mila - video-only output ban raha hai"
-            exit 1
-          fi
-          python3 -c "
-          import sys
-          d, s = float('$d'), float('$SRC_DURATION')
-          diff = abs(d - s)
-          print(f'duration drift: {diff:.3f}s')
-          sys.exit(0 if diff < 5 else 1)
-          " || { echo "::error::output duration source se 5s+ different hai - koi chunk missing/duplicate"; exit 1; }
-          echo "AUDIO OK: $a"
+          ffmpeg -y -loglevel warning -i output.mp4 \
+            -c:v libx265 -crf 28 -preset ultrafast -tag:v hvc1 \
+            -c:a aac -b:a 128k \
+            output_h265.mp4
+          mv output_h265.mp4 output.mp4
+          ls -lh output.mp4
+          echo "After encode: $(( $(stat -c%s output.mp4) / 1024 / 1024 )) MB"
 
-      - name: Extract audio-only (if audio exists)
+      - name: Extract audio (if exists)
         run: |
           has_audio=$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 output.mp4 | head -1)
           if [ -n "$has_audio" ]; then
             ffmpeg -y -loglevel error -i output.mp4 -vn -c:a copy audio.m4a
-            echo "audio codec: $has_audio -> audio.m4a ready"
+            echo "audio: $has_audio -> audio.m4a"
             ls -lh audio.m4a
           else
-            echo "NO AUDIO TRACK in source - audio.m4a skip"
+            echo "NO AUDIO - skip"
           fi
 
       - name: Package zip
@@ -236,37 +82,17 @@ jobs:
           python3 -m zipfile -c video.zip output.mp4
           ls -lh video.zip
 
-      - name: Upload artifact
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: video
-          path: |
-            video.zip
-            audio.m4a
-          if-no-files-found: error
-
-      - name: Create release with direct download link
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          SIZE=$(stat -c%s video.zip)
-          TAG="converted-fast-$(date +%s)"
+          TAG="merged-$(date +%s)"
           AUDIO_ASSET=""
           [ -f audio.m4a ] && AUDIO_ASSET="audio.m4a"
-          if [ "$SIZE" -le 2097151999 ]; then
-            gh release create "$TAG" video.zip $AUDIO_ASSET --title "Converted (parallel) $TAG" --notes "Source: ${{ inputs.url }}
-
-          Parallel h265 encode: ${{ inputs.chunks }} chunks, crf ${{ inputs.crf }}, preset ${{ inputs.preset }}.
-
-          Download video.zip - unzip karo = output.mp4.
-          ${AUDIO_ASSET:+Audio-only file bhi attached hai: audio.m4a (chhota download).}"
-            echo "DOWNLOAD (unzip karo): https://github.com/${{ github.repository }}/releases/download/$TAG/video.zip" >> "$GITHUB_STEP_SUMMARY"
-            [ -f audio.m4a ] && echo "AUDIO ONLY: https://github.com/${{ github.repository }}/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$AUDIO_ASSET" ]; then
+            gh release create "$TAG" video.zip "$AUDIO_ASSET" --title "Merged $TAG" --notes "Source: ${{ inputs.url }} - mode: ${{ steps.decide.outputs.mode }}"
           else
-            split -b 2000M video.zip video.zip.part
-            { echo "Source: ${{ inputs.url }}"; echo; echo "Zip 2GiB se bada hai, isliye parts mein. Rebuild karo:"; echo "  Linux/Mac: cat video.zip.part* > video.zip"; echo "  Windows (cmd): copy /b video.zip.partaa+video.zip.partab > video.zip"; echo "  Phir video.zip ko unzip karo = output.mp4."; echo; for f in video.zip.part*; do echo "https://github.com/${{ github.repository }}/releases/download/$TAG/$f"; done; } > notes.txt
-            gh release create "$TAG" video.zip.part* $AUDIO_ASSET --title "Converted (parallel) $TAG" --notes-file notes.txt
-            cat notes.txt >> "$GITHUB_STEP_SUMMARY"
-            [ -f audio.m4a ] && echo "AUDIO ONLY: https://github.com/${{ github.repository }}/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"
+            gh release create "$TAG" video.zip --title "Merged $TAG" --notes "Source: ${{ inputs.url }} - mode: ${{ steps.decide.outputs.mode }}"
           fi
+          echo "DOWNLOAD: https://github.com/${{ github.repository }}/releases/download/$TAG/video.zip" >> "$GITHUB_STEP_SUMMARY"
+          [ -f audio.m4a ] && echo "AUDIO: https://github.com/${{ github.repository }}/releases/download/$TAG/audio.m4a" >> "$GITHUB_STEP_SUMMARY"
