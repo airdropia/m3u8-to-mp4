@@ -17,8 +17,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install
+        run: echo ok
+      - name: Download
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg >/dev/null
-          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
-          sudo chmod +x /usr/local/bin/yt-dlp
+          yt-dlp \
+            --concurrent-fragments 16 \
+            --retries 10 \
+            -f "bestvideo+bestaudio/best" \
+            --merge-output-format mp4 \
+            -o "output.%(ext)s" \
+            "${{ inputs.url }}"
+          ls -lh output.*
