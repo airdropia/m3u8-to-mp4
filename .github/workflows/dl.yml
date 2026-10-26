@@ -19,12 +19,15 @@ jobs:
       - name: Install
         run: echo ok
       - name: Download
+        run: echo ok
+      - name: Check size and decide
+        id: decide
         run: |
-          yt-dlp \
-            --concurrent-fragments 16 \
-            --retries 10 \
-            -f "bestvideo+bestaudio/best" \
-            --merge-output-format mp4 \
-            -o "output.%(ext)s" \
-            "${{ inputs.url }}"
-          ls -lh output.*
+          SIZE=$(stat -c%s output.mp4)
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "File size: $SIZE bytes"
+          if [ "$SIZE" -ge 2147483648 ]; then
+            echo "mode=encode" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=copy" >> "$GITHUB_OUTPUT"
+          fi
