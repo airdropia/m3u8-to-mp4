@@ -18,7 +18,7 @@ on:
       crf:
         description: 'h265 CRF (chhota number = better quality/bigger)'
         required: false
-        default: '23'
+        default: '24'
       preset:
         description: 'x265 preset (ultrafast fastest, veryfast/medium slower+smaller)'
         required: false
@@ -41,7 +41,7 @@ on:
       crf:
         required: false
         type: string
-        default: '23'
+        default: '24'
       preset:
         required: false
         type: string
