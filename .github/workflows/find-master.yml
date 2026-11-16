@@ -17,10 +17,13 @@ jobs:
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
 
-      - name: List formats
+      - name: Print manifest URL and formats
         run: |
+          echo "=== manifest_url ==="
+          yt-dlp --no-warnings --print "manifest_url" "${{ inputs.url }}" 2>&1 || true
+          echo "=== url ==="
+          yt-dlp --no-warnings --print "url" "${{ inputs.url }}" 2>&1 || true
+          echo "=== all formats ==="
           yt-dlp --no-warnings --list-formats "${{ inputs.url }}" 2>&1 || true
-
-      - name: Print all URLs
-        run: |
-          yt-dlp --no-warnings --print "manifest_url: {manifest_url}" --print "url: {url}" --print "format_id: {format_id}" --print "ext: {ext}" --print "vcodec: {vcodec}" --print "acodec: {acodec}" --print "height: {height}" "${{ inputs.url }}" 2>&1 || true
+          echo "=== print-json ==="
+          yt-dlp --no-warnings --print-json "${{ inputs.url }}" 2>&1 | head -5 || true
