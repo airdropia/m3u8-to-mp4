@@ -1,0 +1,26 @@
+name: Find master m3u8 URL
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Variant m3u8 URL'
+        required: true
+        default: 'https://video.twimg.com/amplify_video/2122184903760478208/pl/avc1/1920x1080/a5Ek47MrvoKOfUz1.m3u8'
+
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install yt-dlp
+        run: |
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod +x /usr/local/bin/yt-dlp
+
+      - name: List formats
+        run: |
+          yt-dlp --no-warnings --list-formats "${{ inputs.url }}" 2>&1 || true
+
+      - name: Print all URLs
+        run: |
+          yt-dlp --no-warnings --print "manifest_url: {manifest_url}" --print "url: {url}" --print "format_id: {format_id}" --print "ext: {ext}" --print "vcodec: {vcodec}" --print "acodec: {acodec}" --print "height: {height}" "${{ inputs.url }}" 2>&1 || true
