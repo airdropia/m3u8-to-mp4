@@ -1,12 +1,12 @@
-name: Find master m3u8 URL
+name: Find master m3u8 URL from tweet
 
 on:
   workflow_dispatch:
     inputs:
-      url:
-        description: 'Variant m3u8 URL'
+      tweet_url:
+        description: 'Twitter/X video URL'
         required: true
-        default: 'https://video.twimg.com/amplify_video/2122184903760478208/pl/avc1/1920x1080/a5Ek47MrvoKOfUz1.m3u8'
+        default: 'https://twitter.com/i/videos/2122184903760478208'
 
 jobs:
   find:
@@ -17,13 +17,9 @@ jobs:
           sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
           sudo chmod +x /usr/local/bin/yt-dlp
 
-      - name: Print manifest URL and formats
+      - name: Try tweet URL
         run: |
-          echo "=== manifest_url ==="
-          yt-dlp --no-warnings --print "manifest_url" "${{ inputs.url }}" 2>&1 || true
-          echo "=== url ==="
-          yt-dlp --no-warnings --print "url" "${{ inputs.url }}" 2>&1 || true
-          echo "=== all formats ==="
-          yt-dlp --no-warnings --list-formats "${{ inputs.url }}" 2>&1 || true
-          echo "=== print-json ==="
-          yt-dlp --no-warnings --print-json "${{ inputs.url }}" 2>&1 | head -5 || true
+          echo "=== tweet URL formats ==="
+          yt-dlp --no-warnings --list-formats "${{ inputs.tweet_url }}" 2>&1 || true
+          echo "=== tweet URL print-json ==="
+          yt-dlp --no-warnings --print-json "${{ inputs.tweet_url }}" 2>&1 | head -20 || true
